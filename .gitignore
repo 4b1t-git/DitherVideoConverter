@@ -1,2 +1,6 @@
 # Local AI runtime state
 .atl/
+
+# Xcode local state
+xcuserdata/
+*.xcuserstate
