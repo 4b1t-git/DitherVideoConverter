@@ -11,6 +11,9 @@
          <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B00000000000000000000041" BuildableName="RenderCoreTests.xctest" BlueprintName="RenderCoreTests" ReferencedContainer="container:AnciiVideoGenerator.xcodeproj"/>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="D00000000000000000000041" BuildableName="MediaPipelineTests.xctest" BlueprintName="MediaPipelineTests" ReferencedContainer="container:AnciiVideoGenerator.xcodeproj"/>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
@@ -20,6 +23,9 @@
          </TestableReference>
          <TestableReference skipped="NO" parallelizable="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B00000000000000000000041" BuildableName="RenderCoreTests.xctest" BlueprintName="RenderCoreTests" ReferencedContainer="container:AnciiVideoGenerator.xcodeproj"/>
+         </TestableReference>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="D00000000000000000000041" BuildableName="MediaPipelineTests.xctest" BlueprintName="MediaPipelineTests" ReferencedContainer="container:AnciiVideoGenerator.xcodeproj"/>
          </TestableReference>
       </Testables>
    </TestAction>
