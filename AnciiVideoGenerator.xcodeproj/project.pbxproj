@@ -11,6 +11,10 @@
 		B00000000000000000000001 /* ErrorDiffusionSpikeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* ErrorDiffusionSpikeTests.swift */; };
 		C00000000000000000000001 /* MetalErrorDiffusionSpike.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000010 /* MetalErrorDiffusionSpike.swift */; };
 		C00000000000000000000002 /* ErrorDiffusion.metal in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000011 /* ErrorDiffusion.metal */; };
+		D00000000000000000000001 /* FixtureGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000010 /* FixtureGateTests.swift */; };
+		D00000000000000000000002 /* MediaFixtureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000011 /* MediaFixtureFactory.swift */; };
+		E00000000000000000000001 /* TimelineNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000010 /* TimelineNormalizer.swift */; };
+		E00000000000000000000002 /* GeometryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000011 /* GeometryPlan.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -22,6 +26,7 @@
 			remoteInfo = AnciiVideoGenerator;
 		};
 		B00000000000000000000003 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000050 /* Project object */; proxyType = 1; remoteGlobalIDString = A00000000000000000000040; remoteInfo = AnciiVideoGenerator; };
+		D00000000000000000000003 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000050 /* Project object */; proxyType = 1; remoteGlobalIDString = A00000000000000000000040; remoteInfo = AnciiVideoGenerator; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -36,12 +41,18 @@
 		B00000000000000000000016 /* RenderCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RenderCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C00000000000000000000010 /* MetalErrorDiffusionSpike.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalErrorDiffusionSpike.swift; sourceTree = "<group>"; };
 		C00000000000000000000011 /* ErrorDiffusion.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ErrorDiffusion.metal; sourceTree = "<group>"; };
+		D00000000000000000000010 /* FixtureGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureGateTests.swift; sourceTree = "<group>"; };
+		D00000000000000000000011 /* MediaFixtureFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaFixtureFactory.swift; sourceTree = "<group>"; };
+		D00000000000000000000016 /* MediaPipelineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MediaPipelineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E00000000000000000000010 /* TimelineNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineNormalizer.swift; sourceTree = "<group>"; };
+		E00000000000000000000011 /* GeometryPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeometryPlan.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A00000000000000000000020 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000021 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000021 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000021 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,16 +62,21 @@
 			sourceTree = "<group>";
 		};
 		A00000000000000000000031 /* Config */ = {isa = PBXGroup; children = (A00000000000000000000012, A00000000000000000000013, A00000000000000000000014); path = Config; sourceTree = "<group>"; };
-		A00000000000000000000032 /* Sources */ = {isa = PBXGroup; children = (A00000000000000000000033 /* App */, C00000000000000000000033 /* RenderCore */); path = Sources; sourceTree = "<group>"; };
+		A00000000000000000000032 /* Sources */ = {isa = PBXGroup; children = (A00000000000000000000033 /* App */, C00000000000000000000033 /* RenderCore */, E00000000000000000000033 /* MediaPipeline */); path = Sources; sourceTree = "<group>"; };
 		A00000000000000000000033 /* App */ = {isa = PBXGroup; children = (A00000000000000000000034 /* Application */); path = App; sourceTree = "<group>"; };
 		A00000000000000000000034 /* Application */ = {isa = PBXGroup; children = (A00000000000000000000010); path = Application; sourceTree = "<group>"; };
 		C00000000000000000000033 /* RenderCore */ = {isa = PBXGroup; children = (C00000000000000000000034 /* Metal */, C00000000000000000000035 /* Shaders */); path = RenderCore; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Metal */ = {isa = PBXGroup; children = (C00000000000000000000010); path = Metal; sourceTree = "<group>"; };
 		C00000000000000000000035 /* Shaders */ = {isa = PBXGroup; children = (C00000000000000000000011); path = Shaders; sourceTree = "<group>"; };
-		A00000000000000000000035 /* Tests */ = {isa = PBXGroup; children = (A00000000000000000000036 /* SmokeTests */, B00000000000000000000036 /* RenderCoreTests */); path = Tests; sourceTree = "<group>"; };
+		E00000000000000000000033 /* MediaPipeline */ = {isa = PBXGroup; children = (E00000000000000000000034 /* Timing */, E00000000000000000000035 /* Geometry */); path = MediaPipeline; sourceTree = "<group>"; };
+		E00000000000000000000034 /* Timing */ = {isa = PBXGroup; children = (E00000000000000000000010); path = Timing; sourceTree = "<group>"; };
+		E00000000000000000000035 /* Geometry */ = {isa = PBXGroup; children = (E00000000000000000000011); path = Geometry; sourceTree = "<group>"; };
+		A00000000000000000000035 /* Tests */ = {isa = PBXGroup; children = (A00000000000000000000036 /* SmokeTests */, B00000000000000000000036 /* RenderCoreTests */, D00000000000000000000036 /* MediaPipelineTests */, D00000000000000000000037 /* TestSupport */); path = Tests; sourceTree = "<group>"; };
 		A00000000000000000000036 /* SmokeTests */ = {isa = PBXGroup; children = (A00000000000000000000011); path = SmokeTests; sourceTree = "<group>"; };
 		B00000000000000000000036 /* RenderCoreTests */ = {isa = PBXGroup; children = (B00000000000000000000010); path = RenderCoreTests; sourceTree = "<group>"; };
-		A00000000000000000000037 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000015, A00000000000000000000016, B00000000000000000000016); name = Products; sourceTree = "<group>"; };
+		D00000000000000000000036 /* MediaPipelineTests */ = {isa = PBXGroup; children = (D00000000000000000000010); path = MediaPipelineTests; sourceTree = "<group>"; };
+		D00000000000000000000037 /* TestSupport */ = {isa = PBXGroup; children = (D00000000000000000000011); path = TestSupport; sourceTree = "<group>"; };
+		A00000000000000000000037 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000015, A00000000000000000000016, B00000000000000000000016, D00000000000000000000016); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -87,12 +103,13 @@
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		B00000000000000000000041 /* RenderCoreTests */ = {isa = PBXNativeTarget; buildConfigurationList = B00000000000000000000072; buildPhases = (B00000000000000000000025 /* Sources */, B00000000000000000000021 /* Frameworks */, B00000000000000000000023 /* Resources */); buildRules = (); dependencies = (B00000000000000000000042 /* PBXTargetDependency */); name = RenderCoreTests; productName = RenderCoreTests; productReference = B00000000000000000000016; productType = "com.apple.product-type.bundle.unit-test"; };
+		D00000000000000000000041 /* MediaPipelineTests */ = {isa = PBXNativeTarget; buildConfigurationList = D00000000000000000000072; buildPhases = (D00000000000000000000025 /* Sources */, D00000000000000000000021 /* Frameworks */, D00000000000000000000023 /* Resources */); buildRules = (); dependencies = (D00000000000000000000042 /* PBXTargetDependency */); name = MediaPipelineTests; productName = MediaPipelineTests; productReference = D00000000000000000000016; productType = "com.apple.product-type.bundle.unit-test"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
 		A00000000000000000000050 /* Project object */ = {
 			isa = PBXProject;
-			attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2660; LastUpgradeCheck = 2660; TargetAttributes = {A00000000000000000000040 = {CreatedOnToolsVersion = 26.6; }; A00000000000000000000041 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000040; }; B00000000000000000000041 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000040; }; }; };
+			attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2660; LastUpgradeCheck = 2660; TargetAttributes = {A00000000000000000000040 = {CreatedOnToolsVersion = 26.6; }; A00000000000000000000041 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000040; }; B00000000000000000000041 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000040; }; D00000000000000000000041 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000040; }; }; };
 			buildConfigurationList = A00000000000000000000070;
 			compatibilityVersion = "Xcode 16.0";
 			developmentRegion = en;
@@ -102,7 +119,7 @@
 			productRefGroup = A00000000000000000000037;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (A00000000000000000000040, A00000000000000000000041, B00000000000000000000041);
+			targets = (A00000000000000000000040, A00000000000000000000041, B00000000000000000000041, D00000000000000000000041);
 		};
 /* End PBXProject section */
 
@@ -110,17 +127,20 @@
 		A00000000000000000000022 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000023 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000023 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000023 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, E00000000000000000000001, E00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		A00000000000000000000042 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A00000000000000000000040 /* AnciiVideoGenerator */; targetProxy = A00000000000000000000003 /* PBXContainerItemProxy */; };
 		B00000000000000000000042 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A00000000000000000000040 /* AnciiVideoGenerator */; targetProxy = B00000000000000000000003 /* PBXContainerItemProxy */; };
+		D00000000000000000000042 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A00000000000000000000040 /* AnciiVideoGenerator */; targetProxy = D00000000000000000000003 /* PBXContainerItemProxy */; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -132,6 +152,8 @@
 		A00000000000000000000065 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000014 /* Release.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.gentleai.AnciiVideoGenerator.SmokeTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnciiVideoGenerator.app/Contents/MacOS/AnciiVideoGenerator"; }; name = Release; };
 		B00000000000000000000064 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000013 /* Debug.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.gentleai.AnciiVideoGenerator.RenderCoreTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnciiVideoGenerator.app/Contents/MacOS/AnciiVideoGenerator"; }; name = Debug; };
 		B00000000000000000000065 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000014 /* Release.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.gentleai.AnciiVideoGenerator.RenderCoreTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnciiVideoGenerator.app/Contents/MacOS/AnciiVideoGenerator"; }; name = Release; };
+		D00000000000000000000064 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000013 /* Debug.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.gentleai.AnciiVideoGenerator.MediaPipelineTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnciiVideoGenerator.app/Contents/MacOS/AnciiVideoGenerator"; }; name = Debug; };
+		D00000000000000000000065 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A00000000000000000000014 /* Release.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.gentleai.AnciiVideoGenerator.MediaPipelineTests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnciiVideoGenerator.app/Contents/MacOS/AnciiVideoGenerator"; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -139,6 +161,7 @@
 		A00000000000000000000071 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000062, A00000000000000000000063); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A00000000000000000000072 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000064, A00000000000000000000065); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		B00000000000000000000072 = {isa = XCConfigurationList; buildConfigurations = (B00000000000000000000064, B00000000000000000000065); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		D00000000000000000000072 = {isa = XCConfigurationList; buildConfigurations = (D00000000000000000000064, D00000000000000000000065); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 	};
 	rootObject = A00000000000000000000050 /* Project object */;
