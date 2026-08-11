@@ -1,0 +1,8 @@
+{
+  "limitedPalettes": [
+    {"name": "Black on White", "colors": [[0, 0, 0], [255, 255, 255]]},
+    {"name": "White on Black", "colors": [[255, 255, 255], [0, 0, 0]]},
+    {"name": "Sepia 4", "colors": [[0, 0, 0], [80, 40, 20], [180, 130, 80], [250, 240, 210]]}
+  ],
+  "constraint": "Custom palettes MUST contain 2–16 sRGB colors; nearest match is computed in linear RGB."
+}
