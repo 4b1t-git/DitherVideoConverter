@@ -2,10 +2,10 @@ import SwiftUI
 
 @main
 struct AnciiVideoGeneratorApp: App {
+    @StateObject private var previewState = PreviewState()
     var body: some Scene {
         WindowGroup {
-            Text("Ancii Video Generator")
-                .frame(minWidth: 640, minHeight: 360)
+            PreviewView(state: previewState, snapshot: nil)
         }
     }
 }
