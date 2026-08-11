@@ -30,8 +30,8 @@ enum TimelineNormalizer {
     static func normalize(video: [MediaSampleTiming], audio: [MediaSampleTiming]) throws -> NormalizedTimeline {
         guard !video.isEmpty else { throw TimelineNormalizationError.missingVideo }
         let samples = video + audio
-        guard samples.allSatisfy({ $0.presentationTime.isValid && $0.duration.isValid
-            && CMTimeCompare($0.duration, .zero) > 0 }) else {
+		guard samples.allSatisfy({ $0.presentationTime.isNumeric && $0.duration.isNumeric
+			&& CMTimeCompare($0.duration, .zero) > 0 }) else {
             throw TimelineNormalizationError.invalidTiming
         }
         let epoch = samples.map(\.presentationTime).min { CMTimeCompare($0, $1) < 0 }!
