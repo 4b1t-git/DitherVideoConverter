@@ -15,6 +15,8 @@
 		D00000000000000000000002 /* MediaFixtureFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000011 /* MediaFixtureFactory.swift */; };
 		E00000000000000000000001 /* TimelineNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000010 /* TimelineNormalizer.swift */; };
 		E00000000000000000000002 /* GeometryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000011 /* GeometryPlan.swift */; };
+		F00000000000000000000001 /* AudioPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000010 /* AudioPolicyTests.swift */; };
+		F00000000000000000000002 /* AudioPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000011 /* AudioPolicy.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +48,8 @@
 		D00000000000000000000016 /* MediaPipelineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MediaPipelineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E00000000000000000000010 /* TimelineNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineNormalizer.swift; sourceTree = "<group>"; };
 		E00000000000000000000011 /* GeometryPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeometryPlan.swift; sourceTree = "<group>"; };
+		F00000000000000000000010 /* AudioPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPolicyTests.swift; sourceTree = "<group>"; };
+		F00000000000000000000011 /* AudioPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,13 +72,14 @@
 		C00000000000000000000033 /* RenderCore */ = {isa = PBXGroup; children = (C00000000000000000000034 /* Metal */, C00000000000000000000035 /* Shaders */); path = RenderCore; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Metal */ = {isa = PBXGroup; children = (C00000000000000000000010); path = Metal; sourceTree = "<group>"; };
 		C00000000000000000000035 /* Shaders */ = {isa = PBXGroup; children = (C00000000000000000000011); path = Shaders; sourceTree = "<group>"; };
-		E00000000000000000000033 /* MediaPipeline */ = {isa = PBXGroup; children = (E00000000000000000000034 /* Timing */, E00000000000000000000035 /* Geometry */); path = MediaPipeline; sourceTree = "<group>"; };
+		E00000000000000000000033 /* MediaPipeline */ = {isa = PBXGroup; children = (E00000000000000000000034 /* Timing */, E00000000000000000000035 /* Geometry */, F00000000000000000000033 /* Audio */); path = MediaPipeline; sourceTree = "<group>"; };
 		E00000000000000000000034 /* Timing */ = {isa = PBXGroup; children = (E00000000000000000000010); path = Timing; sourceTree = "<group>"; };
 		E00000000000000000000035 /* Geometry */ = {isa = PBXGroup; children = (E00000000000000000000011); path = Geometry; sourceTree = "<group>"; };
+		F00000000000000000000033 /* Audio */ = {isa = PBXGroup; children = (F00000000000000000000011); path = Audio; sourceTree = "<group>"; };
 		A00000000000000000000035 /* Tests */ = {isa = PBXGroup; children = (A00000000000000000000036 /* SmokeTests */, B00000000000000000000036 /* RenderCoreTests */, D00000000000000000000036 /* MediaPipelineTests */, D00000000000000000000037 /* TestSupport */); path = Tests; sourceTree = "<group>"; };
 		A00000000000000000000036 /* SmokeTests */ = {isa = PBXGroup; children = (A00000000000000000000011); path = SmokeTests; sourceTree = "<group>"; };
 		B00000000000000000000036 /* RenderCoreTests */ = {isa = PBXGroup; children = (B00000000000000000000010); path = RenderCoreTests; sourceTree = "<group>"; };
-		D00000000000000000000036 /* MediaPipelineTests */ = {isa = PBXGroup; children = (D00000000000000000000010); path = MediaPipelineTests; sourceTree = "<group>"; };
+		D00000000000000000000036 /* MediaPipelineTests */ = {isa = PBXGroup; children = (D00000000000000000000010, F00000000000000000000010); path = MediaPipelineTests; sourceTree = "<group>"; };
 		D00000000000000000000037 /* TestSupport */ = {isa = PBXGroup; children = (D00000000000000000000011); path = TestSupport; sourceTree = "<group>"; };
 		A00000000000000000000037 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000015, A00000000000000000000016, B00000000000000000000016, D00000000000000000000016); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -131,10 +136,10 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, E00000000000000000000001, E00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, E00000000000000000000001, E00000000000000000000002, F00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
-		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002, F00000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
