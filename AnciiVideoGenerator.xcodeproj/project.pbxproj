@@ -22,6 +22,12 @@
 		E00000000000000000000002 /* GeometryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000000000000000000011 /* GeometryPlan.swift */; };
 		F00000000000000000000001 /* AudioPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000010 /* AudioPolicyTests.swift */; };
 		F00000000000000000000002 /* AudioPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000011 /* AudioPolicy.swift */; };
+		H00000000000000000000001 /* AssetValidatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000010 /* AssetValidatorTests.swift */; };
+		H00000000000000000000002 /* PreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000011 /* PreviewTests.swift */; };
+		H00000000000000000000003 /* AssetValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000020 /* AssetValidator.swift */; };
+		H00000000000000000000004 /* PreviewPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000021 /* PreviewPipeline.swift */; };
+		H00000000000000000000005 /* PreviewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000022 /* PreviewState.swift */; };
+		H00000000000000000000006 /* PreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H00000000000000000000023 /* PreviewView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +66,12 @@
 		E00000000000000000000011 /* GeometryPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeometryPlan.swift; sourceTree = "<group>"; };
 		F00000000000000000000010 /* AudioPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPolicyTests.swift; sourceTree = "<group>"; };
 		F00000000000000000000011 /* AudioPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPolicy.swift; sourceTree = "<group>"; };
+		H00000000000000000000010 /* AssetValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetValidatorTests.swift; sourceTree = "<group>"; };
+		H00000000000000000000011 /* PreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewTests.swift; sourceTree = "<group>"; };
+		H00000000000000000000020 /* AssetValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetValidator.swift; sourceTree = "<group>"; };
+		H00000000000000000000021 /* PreviewPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewPipeline.swift; sourceTree = "<group>"; };
+		H00000000000000000000022 /* PreviewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewState.swift; sourceTree = "<group>"; };
+		H00000000000000000000023 /* PreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -77,7 +89,7 @@
 		};
 		A00000000000000000000031 /* Config */ = {isa = PBXGroup; children = (A00000000000000000000012, A00000000000000000000013, A00000000000000000000014); path = Config; sourceTree = "<group>"; };
 		A00000000000000000000032 /* Sources */ = {isa = PBXGroup; children = (A00000000000000000000033 /* App */, C00000000000000000000033 /* RenderCore */, E00000000000000000000033 /* MediaPipeline */); path = Sources; sourceTree = "<group>"; };
-		A00000000000000000000033 /* App */ = {isa = PBXGroup; children = (A00000000000000000000034 /* Application */); path = App; sourceTree = "<group>"; };
+		A00000000000000000000033 /* App */ = {isa = PBXGroup; children = (A00000000000000000000034 /* Application */, H00000000000000000000042 /* UIState */, H00000000000000000000043 /* Features */); path = App; sourceTree = "<group>"; };
 		A00000000000000000000034 /* Application */ = {isa = PBXGroup; children = (A00000000000000000000010); path = Application; sourceTree = "<group>"; };
 		C00000000000000000000033 /* RenderCore */ = {isa = PBXGroup; children = (C00000000000000000000036 /* Model */, C00000000000000000000034 /* Metal */, C00000000000000000000035 /* Shaders */); path = RenderCore; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Metal */ = {isa = PBXGroup; children = (C00000000000000000000010, C00000000000000000000020); path = Metal; sourceTree = "<group>"; };
@@ -86,14 +98,19 @@
 		G00000000000000000000033 /* Resources */ = {isa = PBXGroup; children = (G00000000000000000000034 /* Palettes */, G00000000000000000000035 /* Fonts */); path = Resources; sourceTree = "<group>"; };
 		G00000000000000000000034 /* Palettes */ = {isa = PBXGroup; children = (G00000000000000000000010); path = Palettes; sourceTree = "<group>"; };
 		G00000000000000000000035 /* Fonts */ = {isa = PBXGroup; children = (G00000000000000000000011); path = Fonts; sourceTree = "<group>"; };
-		E00000000000000000000033 /* MediaPipeline */ = {isa = PBXGroup; children = (E00000000000000000000034 /* Timing */, E00000000000000000000035 /* Geometry */, F00000000000000000000033 /* Audio */); path = MediaPipeline; sourceTree = "<group>"; };
+		E00000000000000000000033 /* MediaPipeline */ = {isa = PBXGroup; children = (H00000000000000000000040 /* Validation */, H00000000000000000000041 /* Preview */, E00000000000000000000034 /* Timing */, E00000000000000000000035 /* Geometry */, F00000000000000000000033 /* Audio */); path = MediaPipeline; sourceTree = "<group>"; };
 		E00000000000000000000034 /* Timing */ = {isa = PBXGroup; children = (E00000000000000000000010); path = Timing; sourceTree = "<group>"; };
 		E00000000000000000000035 /* Geometry */ = {isa = PBXGroup; children = (E00000000000000000000011); path = Geometry; sourceTree = "<group>"; };
 		F00000000000000000000033 /* Audio */ = {isa = PBXGroup; children = (F00000000000000000000011); path = Audio; sourceTree = "<group>"; };
+		H00000000000000000000040 /* Validation */ = {isa = PBXGroup; children = (H00000000000000000000020); path = Validation; sourceTree = "<group>"; };
+		H00000000000000000000041 /* Preview */ = {isa = PBXGroup; children = (H00000000000000000000021); path = Preview; sourceTree = "<group>"; };
+		H00000000000000000000042 /* UIState */ = {isa = PBXGroup; children = (H00000000000000000000022); path = UIState; sourceTree = "<group>"; };
+		H00000000000000000000043 /* Features */ = {isa = PBXGroup; children = (H00000000000000000000044 /* Preview */); path = Features; sourceTree = "<group>"; };
+		H00000000000000000000044 /* Preview */ = {isa = PBXGroup; children = (H00000000000000000000023); path = Preview; sourceTree = "<group>"; };
 		A00000000000000000000035 /* Tests */ = {isa = PBXGroup; children = (A00000000000000000000036 /* SmokeTests */, B00000000000000000000036 /* RenderCoreTests */, D00000000000000000000036 /* MediaPipelineTests */, D00000000000000000000037 /* TestSupport */); path = Tests; sourceTree = "<group>"; };
 		A00000000000000000000036 /* SmokeTests */ = {isa = PBXGroup; children = (A00000000000000000000011); path = SmokeTests; sourceTree = "<group>"; };
 		B00000000000000000000036 /* RenderCoreTests */ = {isa = PBXGroup; children = (B00000000000000000000010, B00000000000000000000011); path = RenderCoreTests; sourceTree = "<group>"; };
-		D00000000000000000000036 /* MediaPipelineTests */ = {isa = PBXGroup; children = (D00000000000000000000010, F00000000000000000000010); path = MediaPipelineTests; sourceTree = "<group>"; };
+		D00000000000000000000036 /* MediaPipelineTests */ = {isa = PBXGroup; children = (D00000000000000000000010, F00000000000000000000010, H00000000000000000000010, H00000000000000000000011); path = MediaPipelineTests; sourceTree = "<group>"; };
 		D00000000000000000000037 /* TestSupport */ = {isa = PBXGroup; children = (D00000000000000000000011); path = TestSupport; sourceTree = "<group>"; };
 		A00000000000000000000037 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000015, A00000000000000000000016, B00000000000000000000016, D00000000000000000000016); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -150,10 +167,10 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, C00000000000000000000003, C00000000000000000000004, E00000000000000000000001, E00000000000000000000002, F00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, C00000000000000000000003, C00000000000000000000004, E00000000000000000000001, E00000000000000000000002, F00000000000000000000002, H00000000000000000000003, H00000000000000000000004, H00000000000000000000005, H00000000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001, B00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
-		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002, F00000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002, F00000000000000000000001, H00000000000000000000001, H00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
