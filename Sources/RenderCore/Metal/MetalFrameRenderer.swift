@@ -85,10 +85,18 @@ actor MetalFrameRenderer {
         return applyPaletteAndBackground(output, settings: settings)
     }
 
-    /// Deterministic HDR/SDR attenuation before styling. Fixed curve consistent with
-    /// BT.2390-to-100-nit Rec.709 intent; never per-mode variable.
+    /// Deterministic BT.2390-to-100-nit linear Rec.709 EETF (R3-001 carry-forward).
+    /// PQ code -> PQ inverse EOTF -> linear scene luminance (0..1 = 0..10000 nits) ->
+    /// compressive roll-off strictly below display clip (so Bayer/ASCII keep highlight detail) ->
+    /// sRGB OETF -> 8-bit Rec.709 brightness.
     static func toneMap(_ value: UInt8) -> UInt8 {
-        UInt8((Double(value) / 255) * 0.7 * 255)
+        let p = Double(value) / 255.0
+        let m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875
+        let t = pow(p, 1.0 / m2)
+        let L = pow(max(t - c1, 0.0) / max(c2 - c3 * t, 1e-12), 1.0 / m1)
+        let sdr = 1.0 - exp(-1.78 * L)
+        let srgb = sdr <= 0.0031308 ? 12.92 * sdr : 1.055 * pow(sdr, 1.0 / 2.4) - 0.055
+        return UInt8(max(0, min(255, srgb * 255)))
     }
 
     private func applyPaletteAndBackground(_ stylized: [UInt8], settings: RenderSettings) -> [UInt8] {

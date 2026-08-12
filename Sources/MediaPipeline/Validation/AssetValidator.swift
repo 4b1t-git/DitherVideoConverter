@@ -51,6 +51,7 @@ enum AssetValidator {
         do {
             let format = try await video.load(.formatDescriptions).first
             guard let format else { return unsupported(.unreadable("missing video format description")) }
+            if let codec = codecViolation(format) { return unsupported(codec) }
             let coded = CMVideoFormatDescriptionGetDimensions(format)
             let natural = CGSize(width: Int(coded.width), height: Int(coded.height))
             let transform = try await video.load(.preferredTransform)
@@ -82,6 +83,13 @@ enum AssetValidator {
         return (width, height)
     }
 
+    /// Codec allowlist (R3-016): non-H.264/HEVC tracks MUST fail without resizing.
+    static func codecViolation(_ desc: CMFormatDescription) -> AssetValidationError? {
+        let subtype = CMFormatDescriptionGetMediaSubType(desc)
+        if [kCMVideoCodecType_H264, kCMVideoCodecType_HEVC].contains(subtype) { return nil }
+        let bytes: [UInt8] = [UInt8(truncatingIfNeeded:(subtype>>24)&0xff), UInt8(truncatingIfNeeded:(subtype>>16)&0xff), UInt8(truncatingIfNeeded:(subtype>>8)&0xff), UInt8(truncatingIfNeeded:subtype&0xff)]
+        return .unsupportedCodec(String(bytes: bytes, encoding: .ascii).map { $0.lowercased() } ?? "\(subtype)")
+    }
     private static func unsupported(_ violation: AssetValidationError) -> AssetValidationReport {
         AssetValidationReport(isSupported: false, violation: violation, orientedWidth: 0, orientedHeight: 0,
                               sourceUnchanged: true, summary: violation.errorDescription ?? "")
