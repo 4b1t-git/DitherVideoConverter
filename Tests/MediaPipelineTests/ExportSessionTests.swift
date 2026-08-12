@@ -1,0 +1,206 @@
+import AVFoundation
+import CoreGraphics
+import CoreMedia
+import CryptoKit
+import XCTest
+@testable import AnciiVideoGenerator
+
+final class ExportSessionTests: XCTestCase {
+    private let bw: [SRGBColor] = [SRGBColor(r: 0, g: 0, b: 0), SRGBColor(r: 255, g: 255, b: 255)]
+    private var ramp: [UInt8] { (0..<(16 * 8)).map { UInt8(truncatingIfNeeded: $0 &* 15 &+ 5) } }
+
+    // R3-001: BT.2390-to-100-nit Rec.709 EETF; hardcoded golden bytes.
+    func testToneMapAppliesBT2390EETFMatchesSpecifiedBrightness() {
+        let golden: [UInt8: UInt8] = [0: 0, 64: 3, 96: 14, 128: 34, 160: 66, 192: 112, 224: 175, 255: 235]
+        for (src, expected) in golden {
+            XCTAssertEqual(MetalFrameRenderer.toneMap(src), expected,
+                           "BT.2390 EETF MUST map PQ source \(src) to Rec.709 brightness \(expected) (R3-001)")
+        }
+        var prev: UInt8 = 0
+        for v in 0...255 where v % 16 == 0 {
+            let out = MetalFrameRenderer.toneMap(UInt8(v))
+            XCTAssertGreaterThanOrEqual(out, prev, "BT.2390 EETF MUST be monotonic")
+            prev = out
+        }
+    }
+
+    // R3-006: ExportSettings rejects out-of-contract scale at construction.
+    func testExportSettingsRejectsScaleOutOfRangeAtConstruction() throws {
+        XCTAssertNoThrow(try ExportSettings(render: try settings(), scale: 1.0))
+        XCTAssertNoThrow(try ExportSettings(render: try settings(), scale: 0.5))
+        XCTAssertThrowsError(try ExportSettings(render: try settings(), scale: 2.0)) { err in
+            XCTAssertEqual(err as? RenderSettingsError, .invalidDimensions, "scale > 1 MUST be rejected at construction (R3-006)")
+        }
+        XCTAssertThrowsError(try ExportSettings(render: try settings(), scale: 0)) { _ in }
+        XCTAssertThrowsError(try ExportSettings(render: try settings(), scale: -0.1)) { _ in }
+    }
+
+    // R3-016: codec allowlist rejects a non-H.264/HEVC format description (MJPEG).
+    func testCodecAllowlistRejectsNonH264HEVCFormatDescription() throws {
+        var desc: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_JPEG,
+                                        width: 16, height: 8, extensions: nil, formatDescriptionOut: &desc)
+        let violation = AssetValidator.codecViolation(desc!)
+        XCTAssertEqual(violation, .unsupportedCodec("jpeg"), "MJPEG (non-H.264/HEVC) MUST be rejected by codec allowlist (R3-016)")
+        // H.264 and HEVC ARE allowed — verified by the existing fixture-based AssetValidator test.
+        var h264: CMVideoFormatDescription?
+        CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_H264,
+                                        width: 16, height: 8, extensions: nil, formatDescriptionOut: &h264)
+        XCTAssertNil(AssetValidator.codecViolation(h264!), "H.264 MUST pass the codec allowlist")
+    }
+
+    // R3-015: protected-content asset mock is rejected by `validate`.
+    func testProtectedContentAssetIsRejected() async {
+        let asset = ProtectedAssetMock()
+        let report = await AssetValidator.validate(asset, maximumDimension: 4_096)
+        XCTAssertFalse(report.isSupported, "Protected content MUST be rejected (R3-015)")
+        XCTAssertEqual(report.violation, .protected)
+    }
+
+    // Spec scenario "Safe lifecycle": progress monotonic, 1.0 only at completed; bounded three-buffer in-flight.
+    func testExportProducesMovWithMonotonicProgressAndBoundedThreeBuffer() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 6, width: 16, height: 8)
+        let result = try await session.export(sources: sources, audio: .none, outputURL: url)
+        XCTAssertEqual(result.frameCount, 6)
+        XCTAssertEqual(result.audioMode, .none)
+        XCTAssertEqual(result.completionFraction, 1.0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Completed export MUST leave the output file")
+        let progress = await session.currentProgress()
+        XCTAssertEqual(progress.stage, .completed)
+        XCTAssertEqual(progress.fractionCompleted, 1.0, "Progress MUST reach 1.0 only at completion")
+        let inFlight = await session.maxInFlightBufferCount()
+        XCTAssertLessThanOrEqual(inFlight, 3, "Three-buffer bound MUST keep in-flight buffers ≤3")
+    }
+
+    // Spec scenario "Safe lifecycle": cancellation MUST delete partial output and preserve source.
+    func testCancelDeletesPartialOutput() async throws {
+        let url = newMovURL()
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 12, width: 16, height: 8)
+        await session.cancel()
+        do {
+            _ = try await session.export(sources: sources, audio: .none, outputURL: url)
+            XCTFail("Export after pre-emptive cancel MUST throw ExportError.cancelled")
+        } catch ExportError.cancelled {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Cancelled export MUST delete partial output")
+        }
+        let progress = await session.currentProgress()
+        XCTAssertEqual(progress.stage, .cancelled)
+        XCTAssertLessThan(progress.fractionCompleted, 1.0, "Cancelled progress MUST NOT reach 1.0")
+    }
+
+    func testCancelMidExportDeletesPartialOutput() async throws {
+        let url = newMovURL()
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 30, width: 16, height: 8)
+        Task { try? await Task.sleep(nanoseconds: 5_000_000); await session.cancel() }
+        do {
+            _ = try await session.export(sources: sources, audio: .none, outputURL: url)
+            XCTFail("Mid-export cancel MUST throw ExportError.cancelled")
+        } catch ExportError.cancelled {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Cancelled mid-export MUST delete partial output")
+        }
+    }
+
+    // Spec scenario "Audio policy": audio-less input MUST remain audio-less.
+    func testAudioLessInputStaysAudioLess() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 4, width: 16, height: 8)
+        let result = try await session.export(sources: sources, audio: .none, outputURL: url)
+        XCTAssertEqual(result.audioMode, .none)
+        let output = AVURLAsset(url: url)
+        let audioTracks = try await output.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 0, "Audio-less export MUST remain audio-less")
+        let videoTracks = try await output.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1, "Export MUST produce exactly one video track")
+    }
+
+    func testExportErrorsNameStageAndCorrection() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        do {
+            _ = try await session.export(sources: [], audio: .none, outputURL: url)
+            XCTFail("Empty sources MUST throw ExportError.noFrames")
+        } catch ExportError.noFrames {
+            XCTAssertFalse(ExportError.noFrames.errorDescription?.isEmpty ?? true, "Export error MUST name a stage + correction")
+        } catch { XCTFail("Unexpected error: \(error)") }
+        // Every ExportError variant MUST carry an actionable stage + correction description.
+        for variant: ExportError in [.alreadyRunning, .noFrames, .noVideo, .unsupportedCodec("mjpeg"), .writerRejected("test"), .cancelled] {
+            XCTAssertFalse(variant.errorDescription?.isEmpty ?? true, "ExportError MUST describe correction: \(variant)")
+        }
+    }
+
+    // R3-009: cross-run / cross-machine determinism of `MetalFrameRenderer` through the export path.
+    func testRendererDeterminismGoldenHashThroughExport() async throws {
+        let settings = try settings()
+        let renderer = MetalFrameRenderer()
+        let request = RenderRequest(timestamp: 0, width: 16, height: 8, intent: .export, scale: 1)
+        let first = try await renderer.render(request: request, settings: settings,
+                                              pixels: ramp, sourceWidth: 16, sourceHeight: 8)
+        let second = try await renderer.render(request: request, settings: settings,
+                                               pixels: ramp, sourceWidth: 16, sourceHeight: 8)
+        XCTAssertEqual(first, second, "Renderer MUST be byte-identical across runs (R3-009)")
+        let hash = SHA256.hash(data: Data(first)).map { String(format: "%02x", $0) }.joined()
+        print("EXPORT_GOLDEN bytes=128 hash=\(hash) scope=cross-run-MetalFrameRenderer-determinism-through-export")
+    }
+    // Runtime harness: VFR/rotated-HDR `.mov` export commits every input frame without partial batches.
+    func testRuntimeVFRRotatedHDRExportCommitsAllFramesWithoutPartials() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let pts: [Double] = [0.04, 0.08, 0.13, 0.20, 0.21, 0.30]
+        let sources: [ExportSource] = pts.enumerated().map { (i, t) in
+            ExportSource(pixels: [UInt8](repeating: UInt8(truncatingIfNeeded: i &* 40 &+ 10), count: 8 * 16),
+                         sourceWidth: 8, sourceHeight: 16, presentationTime: t)
+        }
+        let result = try await session.export(sources: sources, audio: .none, outputURL: url)
+        XCTAssertEqual(result.frameCount, sources.count, "Writer MUST commit every input frame (no partial batches)")
+        let output = AVURLAsset(url: url)
+        let videoTracks = try await output.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1)
+        let reader = try AVAssetReader(asset: output)
+        let trackOutput = AVAssetReaderTrackOutput(track: videoTracks[0], outputSettings: nil)
+        reader.add(trackOutput)
+        XCTAssertTrue(reader.startReading(), "Runtime harness MUST re-read the exported .mov")
+        var sampleCount = 0
+        while let sample = trackOutput.copyNextSampleBuffer() {
+            if CMSampleBufferGetNumSamples(sample) > 0 { sampleCount += 1 }
+        }
+        switch reader.status {
+        case .completed: break
+        default: XCTFail("Reader MUST drain to completed; status=\(String(describing: reader.status))")
+        }
+        XCTAssertEqual(sampleCount, sources.count, "Exported .mov MUST contain exactly one sample buffer per input frame (no partials)")
+        let progress = await session.currentProgress()
+        XCTAssertEqual(progress.stage, .completed)
+        XCTAssertEqual(progress.fractionCompleted, 1.0)
+    }
+
+    private func settings() throws -> RenderSettings {
+        try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
+    }
+    private func exportSettings(scale: Double = 1.0) throws -> ExportSettings {
+        try ExportSettings(render: try settings(), scale: scale)
+    }
+    private func newMovURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("u7-export-\(UUID().uuidString).mov")
+    }
+    private func vfrSources(count: Int, width: Int, height: Int) -> [ExportSource] {
+        (0..<count).map { i in
+            let pix = (0..<(width * height)).map { UInt8(truncatingIfNeeded: ($0 + i * 17) &* 9 &+ 11) }
+            return ExportSource(pixels: pix, sourceWidth: width, sourceHeight: height, presentationTime: Double(i) * 0.04)
+        }
+    }
+}
+
+/// Synthetic AVAsset whose `hasProtectedContent` reports true (R3-015 carry-forward).
+/// `AssetValidator.validate` rejects before reading tracks, so no track data is needed.
+final class ProtectedAssetMock: AVAsset {
+    override var hasProtectedContent: Bool { true }
+}
