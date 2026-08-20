@@ -147,6 +147,11 @@ final class ExportSessionTests: XCTestCase {
                                                pixels: ramp, sourceWidth: 16, sourceHeight: 8)
         XCTAssertEqual(first, second, "Renderer MUST be byte-identical across runs (R3-009)")
         let hash = SHA256.hash(data: Data(first)).map { String(format: "%02x", $0) }.joined()
+        // R3-019: pin the EXPORT_GOLDEN sha256 as a stored cross-machine constant so any MetalFrameRenderer/
+        // RenderSettings refactor regression surfaces here. M5-baseline; the assertion pins the value
+        // the deterministic renderer produces on this host (Unit 7 recorded this exact hash).
+        XCTAssertEqual(hash, "54baeeef1ebfe5a4c1a2a10ee26faa2c40b134b63131a6eb3e87af5a4a00cbd3",
+                      "EXPORT_GOLDEN MUST equal the stored cross-machine M5-baseline constant (R3-019)")
         print("EXPORT_GOLDEN bytes=128 hash=\(hash) scope=cross-run-MetalFrameRenderer-determinism-through-export")
     }
     // Runtime harness: VFR/rotated-HDR `.mov` export commits every input frame without partial batches.
@@ -166,7 +171,7 @@ final class ExportSessionTests: XCTestCase {
         XCTAssertEqual(videoTracks.count, 1)
         let reader = try AVAssetReader(asset: output)
         let trackOutput = AVAssetReaderTrackOutput(track: videoTracks[0], outputSettings: nil)
-        reader.add(trackOutput)
+        reader.add(trackOutput) // R3-021: macOS returns Void; not Bool here
         XCTAssertTrue(reader.startReading(), "Runtime harness MUST re-read the exported .mov")
         var sampleCount = 0
         while let sample = trackOutput.copyNextSampleBuffer() {
