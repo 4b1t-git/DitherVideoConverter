@@ -49,6 +49,63 @@ final class PreviewTests: XCTestCase {
         XCTAssertNotNil(accept4, "A newer token after a stale one MUST still be accepted")
     }
 
+    /// Test double for `FrameRendering` that gates each render on a `CheckedContinuation`
+    /// keyed by `request.timestamp`, so a test can control exactly which concurrent scrub
+    /// resumes first. Zero sleeps, zero timing tolerances.
+    private actor BlockingFrameRenderer: FrameRendering {
+        private var arrivals: [Double: CheckedContinuation<Void, Never>] = [:]
+        private var arrived: Set<Double> = []
+        private var releases: [Double: CheckedContinuation<Void, Never>] = [:]
+        private var released: Set<Double> = []
+
+        func waitForArrival(timestamp: Double) async {
+            if arrived.contains(timestamp) { return }
+            await withCheckedContinuation { continuation in
+                arrivals[timestamp] = continuation
+            }
+        }
+
+        func release(timestamp: Double) {
+            released.insert(timestamp)
+            if let continuation = releases.removeValue(forKey: timestamp) {
+                continuation.resume()
+            }
+        }
+
+        func render(request: RenderRequest, settings: RenderSettings,
+                    pixels: [UInt8], sourceWidth: Int, sourceHeight: Int) async throws -> [UInt8] {
+            arrived.insert(request.timestamp)
+            if let waiter = arrivals.removeValue(forKey: request.timestamp) {
+                waiter.resume()
+            }
+            if !released.contains(request.timestamp) {
+                await withCheckedContinuation { continuation in
+                    releases[request.timestamp] = continuation
+                }
+            }
+            return [UInt8](repeating: 0, count: request.width * request.height)
+        }
+    }
+
+    func testStaleScrubDroppedAfterSuspension() async throws {
+        let renderer = BlockingFrameRenderer()
+        let pipeline = PreviewPipeline(renderer: renderer, settings: try settings(), previewScale: 0.5)
+
+        async let token1Result = pipeline.scrub(token: 1, timestamp: 1, source: gradient, sourceWidth: 16, sourceHeight: 32)
+        await renderer.waitForArrival(timestamp: 1)
+
+        async let token2Result = pipeline.scrub(token: 2, timestamp: 2, source: gradient, sourceWidth: 16, sourceHeight: 32)
+        await renderer.waitForArrival(timestamp: 2)
+
+        await renderer.release(timestamp: 2)
+        let snapshot2 = try await token2Result
+        XCTAssertNotNil(snapshot2, "The newer scrub token MUST resolve to a snapshot once its render completes")
+
+        await renderer.release(timestamp: 1)
+        let snapshot1 = try await token1Result
+        XCTAssertNil(snapshot1, "A scrub token superseded during its own render suspension MUST return nil, even though it started first (post-suspension re-validation)")
+    }
+
     func testPreviewWhiteOnBlackInversionGoesThroughRendererUnchanged() async throws {
         let renderer = MetalFrameRenderer()
         let palette = try Palette(colors: blackWhite)
