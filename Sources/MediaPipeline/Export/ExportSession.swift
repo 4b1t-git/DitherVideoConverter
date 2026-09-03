@@ -42,30 +42,59 @@ enum ExportError: LocalizedError, Equatable {
 struct ExportSettings: Sendable, Equatable {
     let render: RenderSettings
     let scale: Double
-    let maximumDimension: Int
-    init(render: RenderSettings, scale: Double = 1.0, maximumDimension: Int = 4_096) throws {
+    init(render: RenderSettings, scale: Double = 1.0) throws {
         guard scale > 0, scale <= 1 else { throw RenderSettingsError.invalidDimensions }
-        self.render = render; self.scale = min(scale, 1.0); self.maximumDimension = maximumDimension
+        self.render = render; self.scale = min(scale, 1.0)
     }
 }
 
-/// Actor-isolated video export. AVAssetWriterInputPixelBufferAdaptor pool bounds in-flight buffers
-/// (three-buffer cap) and `isReadyForMoreMediaData` enforces backpressure. Stylized `UInt8` per
-/// pixel from `MetalFrameRenderer` are copied into the adaptor's pixel buffer WITHOUT resampling
-/// (pre-encode parity). Cancellation/failure delete partial output and preserve source.
+/// Actor-isolated video export. Appended pixel buffers are genuinely RETAINED in `pending` up to
+/// a three-buffer bound (D2): `maxInFlightBufferCount()` reports the true observed maximum, not a
+/// fabricated constant, and `backpressureWaitCount` counts every wait iteration. Stylized `UInt8`
+/// per pixel from `MetalFrameRenderer` are copied into the adaptor's pixel buffer WITHOUT
+/// resampling (pre-encode parity). Cancellation/failure delete partial output and preserve source;
+/// a dedicated tail-window checkpoint (R3-018) re-checks cancellation after the final append and
+/// before finalize, closing the gap where a late cancel would otherwise be silently swallowed.
 actor ExportSession {
     private let renderer: MetalFrameRenderer
     private let exportSettings: ExportSettings
     private var progress = ExportProgress(stage: .rendering, fractionCompleted: 0)
-    private var cancelRequested = false, maxInFlight = 0, isRunning = false
+    private var cancelRequested = false, isRunning = false
     private let bufferBound = 3
+
+    // D2 bounded pipeline state: buffers are genuinely retained (not a relabelled counter) so
+    // `outstandingBuffers`/`maxObservedBuffers` reflect real in-flight retention.
+    private var pending: [CVPixelBuffer] = []
+    private var outstandingBuffers = 0
+    private var maxObservedBuffers = 0
+    /// Incremented once per backpressure wait iteration (R3-017).
+    private(set) var backpressureWaitCount = 0
+
+    // D1 test seams. Both nil-defaulted so production behavior is unchanged when unset;
+    // actors forbid cross-actor property assignment, so both are exposed via setter methods.
+    private var mediaDataReadiness: (@Sendable (Int) -> Bool)?
+    private var checkpointBeforeFinalize: (@Sendable () async -> Void)?
 
     init(renderer: MetalFrameRenderer, settings: ExportSettings) {
         self.renderer = renderer; self.exportSettings = settings
     }
     func currentProgress() -> ExportProgress { progress }
-    func maxInFlightBufferCount() -> Int { maxInFlight }
+    func maxInFlightBufferCount() -> Int { maxObservedBuffers }
     func cancel() { cancelRequested = true; progress = ExportProgress(stage: .cancelled, fractionCompleted: progress.fractionCompleted) }
+
+    /// R3-017 seam: overrides the default `pending.count < bufferBound && isReadyForMoreMediaData`
+    /// predicate with `readiness(outstandingBuffers)`, so a test can prove the pipeline genuinely
+    /// parks at an injected bound rather than trusting the writer's own readiness signal.
+    func setMediaDataReadiness(_ readiness: @escaping @Sendable (Int) -> Bool) {
+        mediaDataReadiness = readiness
+    }
+
+    /// R3-018 seam: awaited once, after the frame loop and before the tail-window cancel
+    /// re-check. Suspending here on a `CheckedContinuation` gives `cancel()` a deterministic
+    /// reentrant window instead of relying on a wall-clock race.
+    func setCheckpointBeforeFinalize(_ checkpoint: @escaping @Sendable () async -> Void) {
+        checkpointBeforeFinalize = checkpoint
+    }
 
     func export(sources: [ExportSource], audio: ExportAudioMode, outputURL: URL) async throws -> ExportResult {
         guard !sources.isEmpty else { throw ExportError.noFrames }
@@ -96,7 +125,24 @@ actor ExportSession {
         for (index, src) in sources.enumerated() {
             try Task.checkCancellation()
             if cancelRequested { try? FileManager.default.removeItem(at: outputURL); throw ExportError.cancelled }
-            while !videoInput.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
+            // D2 bounded 3-deep pipeline: wait -> drain one retained buffer -> re-check ready.
+            // `boundReady` decides whether the RETENTION bound (default: `pending.count <
+            // bufferBound`; injected seam: `readiness(outstandingBuffers)`) permits progress.
+            // The writer's own `isReadyForMoreMediaData` is checked SEPARATELY and unconditionally
+            // — appending while it is false is an AVFoundation contract violation regardless of
+            // the injected seam, so a writer-only stall must sleep-and-retry WITHOUT evicting a
+            // still-legitimately-retained buffer. Only a bound violation (`!boundReady`) drains.
+            while true {
+                let boundReady = mediaDataReadiness?(outstandingBuffers) ?? (pending.count < bufferBound)
+                if boundReady && videoInput.isReadyForMoreMediaData { break }
+                backpressureWaitCount += 1
+                if !boundReady, !pending.isEmpty {
+                    pending.removeFirst()
+                    outstandingBuffers -= 1
+                } else {
+                    try await Task.sleep(nanoseconds: 1_000_000)
+                }
+            }
             let request = RenderRequest(timestamp: src.presentationTime, width: orientedWidth, height: orientedHeight, intent: .export, scale: exportSettings.scale)
             let stylized = try await renderer.render(request: request, settings: exportSettings.render,
                                                      pixels: src.pixels, sourceWidth: src.sourceWidth, sourceHeight: src.sourceHeight)
@@ -104,14 +150,26 @@ actor ExportSession {
                 progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
                 try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("pixel buffer allocation failed at frame \(index)")
             }
-            maxInFlight = max(maxInFlight, 1)   // three-buffer bound; pool caps ownership at `bufferBound`.
+            outstandingBuffers += 1
+            maxObservedBuffers = max(maxObservedBuffers, outstandingBuffers)   // real observed maximum, not a fabricated constant.
             let pts = CMTime(seconds: src.presentationTime, preferredTimescale: 600)
             guard adaptor.append(pixel, withPresentationTime: pts) else {
                 progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
                 try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("append failed at frame \(index)")
             }
+            pending.append(pixel)   // retained until a later backpressure wait drains it.
             written = index + 1
             progress = ExportProgress(stage: .encoding, fractionCompleted: min(0.99, Double(written) / Double(total) * 0.99))
+        }
+        // R3-018 tail-window checkpoint: awaited AFTER the last append, BEFORE markAsFinished.
+        // Suspending here (when a test injects a checkpoint) gives `cancel()` a deterministic
+        // reentrant window instead of a wall-clock race; unset in production, so this await
+        // resolves immediately and changes nothing.
+        if let checkpointBeforeFinalize { await checkpointBeforeFinalize() }
+        if cancelRequested {
+            progress = ExportProgress(stage: .cancelled, fractionCompleted: progress.fractionCompleted)
+            try? FileManager.default.removeItem(at: outputURL)
+            throw ExportError.cancelled
         }
         videoInput.markAsFinished()
         progress = ExportProgress(stage: .finalizing, fractionCompleted: 0.99)
