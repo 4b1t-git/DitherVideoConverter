@@ -187,6 +187,82 @@ final class ExportSessionTests: XCTestCase {
         XCTAssertEqual(progress.fractionCompleted, 1.0)
     }
 
+    // H2-010 (R3-017): maxInFlightBufferCount() MUST report a real observed maximum under
+    // injected readiness pressure, not a fabricated constant. The injected predicate bounds
+    // on `outstandingBuffers` alone (ignoring the writer's own readiness), so a genuine
+    // 3-deep retention pipeline is the only way this can settle at exactly 3.
+    func testMaxInFlightBufferCountReportsThreeUnderInjectedReadiness() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        await session.setMediaDataReadiness { outstanding in outstanding < 3 }
+        let sources = vfrSources(count: 6, width: 16, height: 8)
+        _ = try await session.export(sources: sources, audio: .none, outputURL: url)
+        let inFlight = await session.maxInFlightBufferCount()
+        XCTAssertEqual(inFlight, 3, "Injected readiness bounding on outstandingBuffers MUST settle the observed maximum at exactly 3 (R3-017)")
+        XCTAssertGreaterThan(inFlight, 1, "The observed maximum MUST NOT be the prior fabricated constant of 1")
+    }
+
+    // H2-020 (R3-017): backpressure waits MUST be counted when the pool is at capacity.
+    func testBackpressureWaitCountIncrementsWhenPoolAtCapacity() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        await session.setMediaDataReadiness { outstanding in outstanding < 3 }
+        let sources = vfrSources(count: 6, width: 16, height: 8)
+        _ = try await session.export(sources: sources, audio: .none, outputURL: url)
+        let waits = await session.backpressureWaitCount
+        XCTAssertGreaterThan(waits, 0, "backpressureWaitCount MUST be > 0 once the injected readiness returns false at least once (R3-017)")
+    }
+
+    /// Test double for the `checkpointBeforeFinalize` seam: gates on a `CheckedContinuation`
+    /// so a test can observe the exact tail-window suspension point and call `cancel()`
+    /// before releasing it. Zero sleeps, zero timing tolerances (mirrors `BlockingFrameRenderer`).
+    private actor ExportCheckpointGate {
+        private var arrivalContinuation: CheckedContinuation<Void, Never>?
+        private var releaseContinuation: CheckedContinuation<Void, Never>?
+        private var hasArrived = false
+
+        func waitForArrival() async {
+            if hasArrived { return }
+            await withCheckedContinuation { continuation in arrivalContinuation = continuation }
+        }
+
+        func checkpoint() async {
+            hasArrived = true
+            arrivalContinuation?.resume()
+            arrivalContinuation = nil
+            await withCheckedContinuation { continuation in releaseContinuation = continuation }
+        }
+
+        func release() {
+            releaseContinuation?.resume()
+            releaseContinuation = nil
+        }
+    }
+
+    // H2-030 (R3-018): cancel observed at the tail window (after the final append, before
+    // markAsFinished) MUST throw ExportError.cancelled and delete the partial output.
+    func testCancelObservedAtTailWindowDeletesPartialOutputAndThrows() async throws {
+        let url = newMovURL()
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let gate = ExportCheckpointGate()
+        await session.setCheckpointBeforeFinalize { await gate.checkpoint() }
+        let sources = vfrSources(count: 4, width: 16, height: 8)
+
+        async let exportResult = session.export(sources: sources, audio: .none, outputURL: url)
+        await gate.waitForArrival()
+        await session.cancel()
+        await gate.release()
+
+        do {
+            _ = try await exportResult
+            XCTFail("Cancel observed at the tail-window checkpoint MUST throw ExportError.cancelled")
+        } catch ExportError.cancelled {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Tail-window cancel MUST delete partial output")
+        }
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }
