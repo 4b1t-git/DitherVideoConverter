@@ -17,6 +17,13 @@ enum LifecyclePhase: Sendable, Equatable {
 final class LifecycleCoordinator: ObservableObject {
     @Published private(set) var phase: LifecyclePhase = .empty
     @Published private(set) var validation: AssetValidationReport?
+    /// Real decoded frames from the last successful import (H4, `import-coordinator-wiring`).
+    /// `internal` (not `private`) so `@testable import` can observe it; setter is closed. NOT
+    /// `@Published`: the payload is a multi-megabyte pixel array and publishing it would push a
+    /// full value diff through `objectWillChange` on every import. The UI only ever needs the
+    /// count, which IS published below.
+    internal private(set) var importedSources: [ExportSource]?
+    @Published private(set) var importedFrameCount: Int = 0
     @Published private(set) var exportProgress: ExportProgress?
     @Published private(set) var preflightDisclosure: String?
     @Published private(set) var completionDisclosure: String?
@@ -44,11 +51,26 @@ final class LifecycleCoordinator: ObservableObject {
     var exportEnabled: Bool { validation?.isSupported == true && phase != .exporting }
 
     func importAsset(_ asset: AVAsset, maximumDimension: Int = 4_096) async {
+        // Reset stored state FIRST so a failed or unsupported re-import can never leave a
+        // previous import's frames reachable (D4b, "Stored state added to LifecycleCoordinator").
+        importedSources = nil; importedFrameCount = 0
         phase = .importing; previewState.setImporting()
         let s = signposter.beginInterval("import")
         let report = await AssetValidator.validate(asset, maximumDimension: maximumDimension)
         validation = report
         if report.isSupported {
+            // Decode real frames while phase == .importing (honest: importing means validate +
+            // decode). Extraction failure does NOT block exportEnabled (the asset genuinely IS
+            // supported) — it only surfaces via lastError; the real consequence is deferred to
+            // the next argument-less export, which will fail noFrames (D4b point 5).
+            do {
+                let sources = try await AssetFrameExtractor.extract(from: asset, maximumDimension: maximumDimension)
+                importedSources = sources
+                importedFrameCount = sources.count
+            } catch {
+                lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                log.error("import extraction failed: \(self.lastError ?? "")")
+            }
             phase = .ready; previewState.setReady(timestamp: 0)
         } else {
             phase = .unsupported; previewState.setUnsupported(report.violation?.errorDescription ?? report.summary)
@@ -64,8 +86,12 @@ final class LifecycleCoordinator: ObservableObject {
     /// Drives `ExportSession.export`, surfacing progress + disclosures; never re-throws (UI owns
     /// the lifecycle surface). Cancellation/failure delete partial output (ExportSession owns it)
     /// and the source is never touched (preservation is structural).
-    func export(sources: [ExportSource], audio: ExportAudioMode, outputURL: URL) async {
-        guard exportEnabled, !sources.isEmpty else {
+    func export(sources: [ExportSource]? = nil, audio: ExportAudioMode, outputURL: URL) async {
+        // An explicit non-nil argument wins (including `[]`, used by tests to prove the
+        // no-frames failure); `nil` (the default, and the only form production/UI code uses)
+        // falls back to the stored frames from the last successful import (D4b point 3).
+        let resolved = sources ?? importedSources ?? []
+        guard exportEnabled, !resolved.isEmpty else {
             phase = .failed; lastError = ExportError.noFrames.errorDescription; return
         }
         phase = .exporting
@@ -75,11 +101,11 @@ final class LifecycleCoordinator: ObservableObject {
         exportSession = session
         let s = signposter.beginInterval("export")
         do {
-            _ = try await session.export(sources: sources, audio: audio, outputURL: outputURL)
+            _ = try await session.export(sources: resolved, audio: audio, outputURL: outputURL)
             exportProgress = await session.currentProgress()
             phase = .exported
             completionDisclosure = audioDisclosure(audio, stage: .completion)
-            log.info("export completed frames=\(sources.count)")
+            log.info("export completed frames=\(resolved.count)")
         } catch let ExportError.cancelled {
             exportProgress = await session.currentProgress()
             phase = .cancelled
