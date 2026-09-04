@@ -144,6 +144,30 @@ final class LifecycleTests: XCTestCase {
         XCTAssertNil(coordinator.importedSources, "Extraction failure MUST leave stored sources nil")
     }
 
+    // H5 (export-audio): disclosure MUST reflect the actually wired `AudioPolicyDecision`, never
+    // the caller's requested `ExportAudioMode`. `.passthrough` is requested here on purpose while
+    // the fixture's LPCM audio track genuinely resolves to `.aacFallback`.
+    func testAudioDisclosureReflectsWiredDecisionNotRequestedMode() async throws {
+        let fixture = try MediaFixtureFactory().makeCombinedFixture(audio: .lpcm)
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let audioAsset = AVURLAsset(url: fixture.audioURL)
+        let audioTrackList = try await audioAsset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(audioTrackList.first)
+        let decision = try await AudioPolicy.decision(for: track)
+        XCTAssertEqual(decision.mode, .aacFallback, "LPCM source MUST resolve to AAC fallback")
+        let attachment = AudioAttachment(decision: decision, track: track)
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        await coordinator.export(audio: .passthrough, audioSource: attachment, outputURL: url)
+        XCTAssertEqual(coordinator.phase, .exported)
+        XCTAssertEqual(coordinator.completionDisclosure, decision.disclosure(at: .completion),
+                       "Disclosure MUST state the wired .aacFallback decision, not the requested .passthrough mode")
+        XCTAssertTrue(coordinator.completionDisclosure?.contains("AAC fallback") ?? false,
+                      "Wired .aacFallback disclosure text MUST be surfaced, not the requested passthrough text")
+    }
+
     // R3-010 (Unit 6 carry-forward): `PreviewFrameView` `Equatable` MUST depend ONLY on the snapshot,
     // so a per-timestamp overlay bump does NOT repaint the O(W×H) frame canvas.
     func testPreviewFrameViewEqualityDependsOnlyOnSnapshot() async throws {

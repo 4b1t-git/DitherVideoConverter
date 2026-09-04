@@ -86,7 +86,7 @@ final class LifecycleCoordinator: ObservableObject {
     /// Drives `ExportSession.export`, surfacing progress + disclosures; never re-throws (UI owns
     /// the lifecycle surface). Cancellation/failure delete partial output (ExportSession owns it)
     /// and the source is never touched (preservation is structural).
-    func export(sources: [ExportSource]? = nil, audio: ExportAudioMode, outputURL: URL) async {
+    func export(sources: [ExportSource]? = nil, audio: ExportAudioMode, audioSource: AudioAttachment? = nil, outputURL: URL) async {
         // An explicit non-nil argument wins (including `[]`, used by tests to prove the
         // no-frames failure); `nil` (the default, and the only form production/UI code uses)
         // falls back to the stored frames from the last successful import (D4b point 3).
@@ -96,15 +96,26 @@ final class LifecycleCoordinator: ObservableObject {
         }
         phase = .exporting
         exportProgress = ExportProgress(stage: .rendering, fractionCompleted: 0)
-        preflightDisclosure = audioDisclosure(audio, stage: .preflight)
+        // Disclosure and the actually-wired `ExportAudioMode` BOTH derive from `audioSource`'s
+        // own `AudioPolicyDecision` — never from the caller's requested `audio` argument (H5,
+        // export-audio: "Audio disclosure MUST reflect the actually wired decision"). Routing a
+        // `nil` track through the SAME `AudioPolicy.decision` call (rather than a bespoke
+        // `.absent` literal) keeps this one code path the single source of truth for both the
+        // "no audio" and "real audio" cases, so divergence between the two is structurally
+        // impossible. A `nil` track never throws, so `try!` here is safe.
+        let decision: AudioPolicyDecision
+        if let audioSource { decision = audioSource.decision }
+        else { decision = try! await AudioPolicy.decision(for: nil) }
+        let wiredAudio = exportAudioMode(for: decision.mode)
+        preflightDisclosure = decision.disclosure(at: .preflight)
         let session = ExportSession(renderer: renderer, settings: exportSettings)
         exportSession = session
         let s = signposter.beginInterval("export")
         do {
-            _ = try await session.export(sources: resolved, audio: audio, outputURL: outputURL)
+            _ = try await session.export(sources: resolved, audio: wiredAudio, audioSource: audioSource, outputURL: outputURL)
             exportProgress = await session.currentProgress()
             phase = .exported
-            completionDisclosure = audioDisclosure(audio, stage: .completion)
+            completionDisclosure = decision.disclosure(at: .completion)
             log.info("export completed frames=\(resolved.count)")
         } catch let ExportError.cancelled {
             exportProgress = await session.currentProgress()
@@ -122,17 +133,14 @@ final class LifecycleCoordinator: ObservableObject {
 
     func cancelExport() async { await exportSession?.cancel() }
 
-    /// Audio policy disclosure mirroring `AudioPolicyDecision.disclosure`; the modes are honest
-    /// for `.none` (audio-less, the only mode ExportSession writes today). Passthrough/AAC modes
-    /// disclose the intent; wiring the audio `AVAssetWriterInput` is Deviation #3 (deferred).
-    private func audioDisclosure(_ mode: ExportAudioMode, stage: AudioDisclosureStage) -> String {
-        switch (mode, stage) {
-        case (.none, .preflight): return "No audio will be exported."
-        case (.none, .completion): return "Export completed without audio."
-        case (.passthrough, .preflight): return "Compatible source audio will use verified .mov passthrough."
-        case (.passthrough, .completion): return "Export completed with verified audio passthrough."
-        case (.aacFallback, .preflight): return "AAC fallback will preserve timing when supported; output is not bit-identical."
-        case (.aacFallback, .completion): return "Export completed with disclosed AAC fallback; output is not bit-identical."
+    /// Maps the actually-wired `AudioPolicyDecision.mode` onto the `ExportAudioMode` value
+    /// `ExportSession.export` (and its `ExportResult.audioMode`) actually reports — the export
+    /// result therefore always reflects the wired decision, never the requested mode (H5-080).
+    private func exportAudioMode(for mode: AudioPolicyMode) -> ExportAudioMode {
+        switch mode {
+        case .absent: return .none
+        case .passthrough: return .passthrough
+        case .aacFallback: return .aacFallback
         }
     }
 }

@@ -3,6 +3,8 @@ import CoreVideo
 @testable import AnciiVideoGenerator
 
 struct MediaFixture { let videoURL: URL; let audioURL: URL; var urls: [URL] { [videoURL, audioURL] } }
+/// Audio codec choice for `MediaFixtureFactory.makeCombinedFixture(audio:)` (H5, `export-audio`).
+enum FixtureAudioFormat { case aac, lpcm }
 struct MediaInspection {
     let video: [MediaSampleTiming]
     let audio: [MediaSampleTiming]
@@ -55,6 +57,36 @@ final class MediaFixtureFactory {
         guard writer.status == .completed else { throw MediaFixtureError.writing(writer.error) }
         return MediaFixture(videoURL: url, audioURL: try makeAudioFixture())
     }
+    /// Extends the existing separate video/audio URL fixture shape (H5, `export-audio`) with a
+    /// configurable audio codec: `.aac` (non-LPCM subtype) drives `AudioPolicy` to
+    /// `.passthrough`; `.lpcm` drives it to `.aacFallback`. Reuses the same 4-frame rotated
+    /// video track as `makeFixture()`; only the paired audio file's codec varies — the two
+    /// inputs remain independent files, never muxed (D6).
+    func makeCombinedFixture(audio format: FixtureAudioFormat) throws -> MediaFixture {
+        let video = try makeFixture()
+        try? FileManager.default.removeItem(at: video.audioURL)
+        let ext = format == .aac ? "m4a" : "caf"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unit-5-audio-fixture-\(UUID().uuidString).\(ext)")
+        guard let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
+              let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: 9_600) else {
+            throw MediaFixtureError.setup("audio buffer")
+        }
+        buffer.frameLength = 9_600
+        for channel in 0..<2 {
+            for frame in 0..<Int(buffer.frameLength) {
+                buffer.floatChannelData![channel][frame] = sin(Float(frame) * 0.03125)
+            }
+        }
+        let settings: [String: Any] = format == .aac
+            ? [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000,
+               AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 128_000]
+            : audioFormat.settings
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        try file.write(from: buffer)
+        return MediaFixture(videoURL: video.videoURL, audioURL: url)
+    }
+
     func inspect(_ fixture: MediaFixture) async throws -> MediaInspection {
         let videoAsset = AVURLAsset(url: fixture.videoURL)
         let audioAsset = AVURLAsset(url: fixture.audioURL)

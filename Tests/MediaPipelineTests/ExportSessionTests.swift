@@ -263,6 +263,61 @@ final class ExportSessionTests: XCTestCase {
         }
     }
 
+    // H5-020 (export-audio): passthrough export produces exactly 1 audio track carrying
+    // passthrough-compatible samples (the qualifying source format is retained, not transcoded).
+    func testPassthroughExportProducesExactlyOneAudioTrack() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fixture = try MediaFixtureFactory().makeCombinedFixture(audio: .aac)
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let audioAsset = AVURLAsset(url: fixture.audioURL)
+        let audioTrackList = try await audioAsset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(audioTrackList.first)
+        let decision = try await AudioPolicy.decision(for: track)
+        XCTAssertEqual(decision.mode, .passthrough, "AAC source MUST qualify for passthrough")
+        let attachment = AudioAttachment(decision: decision, track: track)
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 4, width: 16, height: 8)
+        let result = try await session.export(sources: sources, audio: .passthrough, audioSource: attachment, outputURL: url)
+        XCTAssertEqual(result.audioMode, .passthrough)
+        let output = AVURLAsset(url: url)
+        let audioTracks = try await output.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 1, "Passthrough export MUST produce exactly one audio track")
+        let outputFormats = try await audioTracks[0].load(.formatDescriptions)
+        let outputFormat = try XCTUnwrap(outputFormats.first)
+        XCTAssertNotEqual(CMFormatDescriptionGetMediaSubType(outputFormat), kAudioFormatLinearPCM,
+                          "Passthrough audio MUST retain a non-LPCM (compatible source) subtype")
+        let videoTracks = try await output.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1)
+    }
+
+    // H5-030 (export-audio): a source requiring AAC fallback MUST produce exactly 1 AAC audio track.
+    func testAacFallbackExportProducesExactlyOneAacAudioTrack() async throws {
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fixture = try MediaFixtureFactory().makeCombinedFixture(audio: .lpcm)
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let audioAsset = AVURLAsset(url: fixture.audioURL)
+        let audioTrackList = try await audioAsset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(audioTrackList.first)
+        let decision = try await AudioPolicy.decision(for: track)
+        XCTAssertEqual(decision.mode, .aacFallback, "LPCM source MUST resolve to AAC fallback")
+        let attachment = AudioAttachment(decision: decision, track: track)
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try exportSettings())
+        let sources = vfrSources(count: 4, width: 16, height: 8)
+        let result = try await session.export(sources: sources, audio: .aacFallback, audioSource: attachment, outputURL: url)
+        XCTAssertEqual(result.audioMode, .aacFallback)
+        let output = AVURLAsset(url: url)
+        let audioTracks = try await output.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 1, "AAC fallback export MUST produce exactly one audio track")
+        let outputFormats = try await audioTracks[0].load(.formatDescriptions)
+        let outputFormat = try XCTUnwrap(outputFormats.first)
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(outputFormat), kAudioFormatMPEG4AAC,
+                      "AAC fallback audio track MUST be encoded as AAC")
+        let videoTracks = try await output.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1)
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }
