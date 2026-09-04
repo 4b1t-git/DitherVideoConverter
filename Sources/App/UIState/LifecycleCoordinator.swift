@@ -30,6 +30,15 @@ final class LifecycleCoordinator: ObservableObject {
     /// `importedSources`: it boxes an `AVAssetTrack` and an `AudioPolicyDecision`, and the UI has
     /// no use for either — it cannot draw a track. What the UI CAN show is published below.
     internal private(set) var importedAudio: AudioAttachment?
+    /// The imported `AVAsset` itself, retained for exactly as long as `importedAudio` is.
+    ///
+    /// `AVAssetTrack.asset` is declared `@property (nonatomic, readonly, weak)` — a track does NOT
+    /// keep its asset alive. `openAsset(url:)` builds its `AVURLAsset` as a temporary, so without
+    /// this reference ARC would release the asset the moment `importAsset` returns, leaving
+    /// `importedAudio.track.asset` nil and making `AudioPump` throw `writerRejected("audio track
+    /// has no asset")` on the next export. An `AudioAttachment` is only valid while the asset its
+    /// track came from is still alive, and this property is what makes that true.
+    private var importedAsset: AVAsset?
     /// The import-time audio verdict as a user-facing sentence. `@Published` where the attachment
     /// is not, because this is the piece the UI can actually render — and it MUST be rendered at
     /// import time: the user has to know whether sound will survive BEFORE committing to a write,
@@ -178,7 +187,7 @@ final class LifecycleCoordinator: ObservableObject {
         // reason: an unsupported or audio-less re-import MUST NOT carry the previous clip's
         // sound into the next export.
         importedSources = nil; importedFrameCount = 0; previewSnapshot = nil
-        importedAudio = nil; importedAudioDisclosure = nil
+        importedAudio = nil; importedAudioDisclosure = nil; importedAsset = nil
         phase = .importing; previewState.setImporting()
         let s = signposter.beginInterval("import")
         let report = await AssetValidator.validate(asset, maximumDimension: maximumDimension)
@@ -204,7 +213,11 @@ final class LifecycleCoordinator: ObservableObject {
             do {
                 let track = try await asset.loadTracks(withMediaType: .audio).first
                 let decision = try await AudioPolicy.decision(for: track)
-                if let track { importedAudio = AudioAttachment(decision: decision, track: track) }
+                if let track {
+                    importedAudio = AudioAttachment(decision: decision, track: track)
+                    // Retain the asset, not just the track — see `importedAsset`.
+                    importedAsset = asset
+                }
                 importedAudioDisclosure = decision.disclosure(at: .preflight)
             } catch {
                 // A track that cannot be classified MUST NOT block the export. Refusing to write
@@ -214,7 +227,7 @@ final class LifecycleCoordinator: ObservableObject {
                 // throws) so the UI states plainly that the export will be silent.
                 lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 log.error("import audio classification failed: \(self.lastError ?? "")")
-                importedAudio = nil
+                importedAudio = nil; importedAsset = nil
                 importedAudioDisclosure = try? await AudioPolicy.decision(for: nil).disclosure(at: .preflight)
             }
             phase = .ready; previewState.setReady(timestamp: 0)
