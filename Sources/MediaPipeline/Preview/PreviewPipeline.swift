@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// One preview frame: the adapted `RenderRequest` (intent `.preview`, `scale` < 1) and the
@@ -6,6 +7,37 @@ import Foundation
 struct PreviewSnapshot: Sendable, Equatable {
     let request: RenderRequest
     let pixels: [UInt8]
+}
+
+/// Bridges a snapshot's stylized luma bytes into a single 8-bit grayscale `CGImage`.
+///
+/// The preview surface used to fill one rounded rect per pixel inside a SwiftUI `Canvas`, which
+/// costs O(W×H) draw calls per repaint: tolerable for a 16×8 fixture, unusable for a real clip.
+/// One image handed to `Image(decorative:scale:)` collapses that to a single blit, and the
+/// renderer's bytes stay the source of truth — no resampling, no re-quantization on the UI side.
+///
+/// Geometry comes from `request`, never from `pixels.count`: the request is what the renderer was
+/// asked to produce, so a mismatch is a bug to surface as `nil`, not to paper over. Fails closed
+/// (returns `nil`) on a non-positive size or a buffer shorter than `width * height`, because
+/// handing CoreGraphics a short buffer would let it read past the end of the array.
+extension PreviewSnapshot {
+    func makeGrayscaleImage() -> CGImage? {
+        let width = request.width, height = request.height
+        guard width > 0, height > 0 else { return nil }
+        let required = width * height
+        guard pixels.count >= required else { return nil }
+        // `Data(pixels.prefix(required))` COPIES the bytes into storage the provider owns. The
+        // array must never be reached through an escaping unsafe pointer: `CGDataProvider` outlives
+        // this call, and a pointer into `pixels` would dangle the moment the array is released.
+        let copy = Data(pixels.prefix(required))
+        guard let provider = CGDataProvider(data: copy as CFData) else { return nil }
+        return CGImage(width: width, height: height,
+                       bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
+                       space: CGColorSpaceCreateDeviceGray(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false,
+                       intent: .defaultIntent)
+    }
 }
 
 /// Renderer seam for `PreviewPipeline`. `MetalFrameRenderer` conforms below; tests substitute a
