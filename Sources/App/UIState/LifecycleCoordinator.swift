@@ -129,9 +129,19 @@ final class LifecycleCoordinator: ObservableObject {
 
     /// Default export settings (a 2-color bayer palette at scale 1). Constructed once; throws are
     /// known-good so `try!` is safe.
+    ///
+    /// `background` MUST be `.postToneMapSDR` and MUST be passed explicitly. `RenderSettings`
+    /// defaults it to `.blackOnWhite`, and per `MetalFrameRenderer.render`'s contract every
+    /// background EXCEPT `.postToneMapSDR` returns a palette INDEX (0…N-1), not brightness.
+    /// Nothing downstream maps an index back to a colour: `ExportSession` writes the byte straight
+    /// into the luma plane and `PreviewSnapshot.makeGrayscaleImage` reads it straight as grey. With
+    /// this 2-colour palette that made every rendered pixel 0 or 1 — a fully black preview and a
+    /// fully black export, from any source. `.postToneMapSDR` returns the stylized brightness the
+    /// dither actually produced ({0, 255} here), which is what a luma plane can carry.
     static let defaultSettings: ExportSettings = {
         let palette = try! Palette(colors: [SRGBColor(r: 0, g: 0, b: 0), SRGBColor(r: 255, g: 255, b: 255)])
-        let render = try! RenderSettings(style: .dither(.bayer), palette: palette)
+        let render = try! RenderSettings(style: .dither(.bayer), palette: palette,
+                                         background: .postToneMapSDR)
         return try! ExportSettings(render: render, scale: 1.0)
     }()
 
