@@ -5,7 +5,7 @@ struct AnciiVideoGeneratorApp: App {
     @StateObject private var coordinator = LifecycleCoordinator()
     var body: some Scene {
         WindowGroup {
-            WorkspaceView(coordinator: coordinator)
+            WorkspaceView(coordinator: coordinator, previewState: coordinator.previewState)
         }
         .commands {
             // The default "New" group is replaced rather than added to: this app has no document

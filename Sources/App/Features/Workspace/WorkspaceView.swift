@@ -31,13 +31,20 @@ enum WorkspaceActions {
 /// the coordinator has no opinion about until the user moves it.
 struct WorkspaceView: View {
     @ObservedObject var coordinator: LifecycleCoordinator
+    /// Observed EXPLICITLY rather than reached through `coordinator`. `PreviewState` is its own
+    /// `ObservableObject`, so the coordinator's `objectWillChange` says nothing about a timestamp
+    /// bump. Every path that moves the timestamp today ALSO touches a published coordinator
+    /// property, which makes the frame label below correct by accident; observing the object the
+    /// label actually reads makes it correct by construction, and keeps a future path that only
+    /// touches `PreviewState` from silently freezing the label.
+    @ObservedObject var previewState: PreviewState
     /// Slider position, in frames. `Double` because `Slider` is `BinaryFloatingPoint`-bound; it is
     /// stepped by 1 and only ever read back through `Int(...)`.
     @State private var frameIndex: Double = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            PreviewView(state: coordinator.previewState, snapshot: coordinator.previewSnapshot)
+            PreviewView(state: previewState, snapshot: coordinator.previewSnapshot)
             frameNavigator
             controls
             status
@@ -68,7 +75,7 @@ struct WorkspaceView: View {
     private var frameLabel: String {
         guard coordinator.importedFrameCount > 0 else { return "No frames" }
         return String(format: "Frame %d / %d — %.2f s", Int(frameIndex) + 1,
-                      coordinator.importedFrameCount, coordinator.previewState.currentTimestamp)
+                      coordinator.importedFrameCount, previewState.currentTimestamp)
     }
 
     private var controls: some View {
