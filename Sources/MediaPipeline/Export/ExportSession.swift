@@ -27,7 +27,10 @@ struct AudioAttachment: @unchecked Sendable {
 /// Shared bound for the readiness spins on BOTH the video and audio `AVAssetWriterInput`s
 /// (H5-070). An injected/default readiness predicate that never resolves would otherwise spin
 /// forever; this converts that into an actionable `writerRejected` failure instead of a hang.
-private let backpressureDeadlineSeconds: TimeInterval = 5
+/// Calibrated for a writer that has genuinely died, NOT for a writer that is merely busy: a
+/// slow output disk, a network mount, or I/O throttling can legitimately stall an append for
+/// seconds, and failing such an export would be a false alarm.
+private let backpressureDeadlineSeconds: TimeInterval = 30
 
 enum ExportStage: Sendable, Equatable { case rendering, encoding, finalizing, completed, cancelled, failed }
 
