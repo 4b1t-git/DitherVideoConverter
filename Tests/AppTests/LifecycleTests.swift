@@ -101,6 +101,49 @@ final class LifecycleTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Failed export MUST delete partial output")
     }
 
+    // H4 (import-coordinator-wiring): a real import followed by an argument-less export MUST use
+    // the coordinator's stored extracted frames (no synthetic `sources:` argument supplied).
+    func testImportThenExportRoundTripUsesStoredFrames() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        XCTAssertEqual(coordinator.phase, .ready, "Import of a supported fixture MUST navigate to .ready before export")
+        await coordinator.export(audio: .none, outputURL: url)
+        XCTAssertEqual(coordinator.phase, .exported, "Round-trip export MUST navigate to .exported using stored frames")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Round-trip export MUST leave the output file")
+        let frameCount = try readVideoFrameCount(url)
+        XCTAssertEqual(frameCount, 4, "Round-trip export MUST commit exactly the 4 extracted fixture frames")
+    }
+
+    // H4: an argument-less export before any successful import MUST fail with `noFrames` (no
+    // stored frames exist yet); the existing `testFailingExportSurfacesActionableErrorAndDeletesPartial`
+    // (explicit `sources: []`) stays green unedited since `[]` is non-nil and never falls through.
+    func testExportWithoutPriorImportFailsNoFrames() async {
+        let url = exportURL()
+        let coordinator = LifecycleCoordinator()
+        await coordinator.export(audio: .none, outputURL: url)
+        XCTAssertEqual(coordinator.phase, .failed, "Export without a prior import MUST fail (no stored frames)")
+        XCTAssertEqual(coordinator.lastError, ExportError.noFrames.errorDescription,
+                       "Failure MUST report the noFrames description")
+    }
+
+    // H4: a validated-supported asset whose frame extraction fails MUST NOT disable `exportEnabled`
+    // (the asset genuinely IS supported); the failure is surfaced via `lastError` and stored frames
+    // stay nil, deferring the observable consequence to the next argument-less export (D4b point 5).
+    func testExtractionFailurePreservesExportEnabledAndSetsLastError() async throws {
+        let (asset, urls) = try corruptedFixtureAsset()
+        defer { urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(asset)
+        XCTAssertEqual(coordinator.phase, .ready, "A validated-supported asset MUST still navigate to .ready")
+        XCTAssertEqual(coordinator.exportEnabled, true, "Extraction failure MUST NOT disable exportEnabled (asset IS supported)")
+        XCTAssertNotNil(coordinator.lastError, "Extraction failure MUST surface a lastError")
+        XCTAssertNil(coordinator.importedSources, "Extraction failure MUST leave stored sources nil")
+    }
+
     // R3-010 (Unit 6 carry-forward): `PreviewFrameView` `Equatable` MUST depend ONLY on the snapshot,
     // so a per-timestamp overlay bump does NOT repaint the O(W×H) frame canvas.
     func testPreviewFrameViewEqualityDependsOnlyOnSnapshot() async throws {
@@ -126,5 +169,42 @@ final class LifecycleTests: XCTestCase {
     }
     private func fileSize(_ url: URL) -> Int {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? -1
+    }
+    /// Re-reads an exported `.mov` and counts committed video sample buffers (mirrors the
+    /// `ExportSessionTests` runtime-harness pattern used to prove no-partial-batches).
+    private func readVideoFrameCount(_ url: URL) throws -> Int {
+        let asset = AVURLAsset(url: url)
+        let reader = try AVAssetReader(asset: asset)
+        guard let track = asset.tracks(withMediaType: .video).first else { return 0 }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(output)
+        guard reader.startReading() else { return 0 }
+        var count = 0
+        while let sample = output.copyNextSampleBuffer() {
+            if CMSampleBufferGetNumSamples(sample) > 0 { count += 1 }
+        }
+        return count
+    }
+    /// Builds a fixture whose `moov` metadata (tracks/format/transform) parses fine — so
+    /// `AssetValidator` reports it supported — but whose `mdat` payload is overwritten in place
+    /// (same byte length, so `moov` sample-table offsets stay valid) so decoding real frame data
+    /// genuinely fails. This is the exact condition `AssetFrameExtractor.extract`'s own
+    /// `reader.reader.status == .completed` guard exists to catch.
+    private func corruptedFixtureAsset() throws -> (asset: AVAsset, urls: [URL]) {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        var data = try Data(contentsOf: fixture.videoURL)
+        var offset = 0
+        while offset + 8 <= data.count {
+            let size = Int(data[offset]) << 24 | Int(data[offset + 1]) << 16
+                | Int(data[offset + 2]) << 8 | Int(data[offset + 3])
+            let type = String(bytes: data[(offset + 4)..<(offset + 8)], encoding: .ascii) ?? ""
+            guard size >= 8, offset + size <= data.count else { break }
+            if type == "mdat" {
+                for i in (offset + 8)..<(offset + size) { data[i] = 0xFF }
+            }
+            offset += size
+        }
+        try data.write(to: fixture.videoURL)
+        return (AVURLAsset(url: fixture.videoURL), fixture.urls)
     }
 }
