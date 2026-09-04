@@ -510,6 +510,69 @@ final class LifecycleTests: XCTestCase {
         }
     }
 
+    // The app's own default settings MUST render displayable BRIGHTNESS, never palette indices.
+    //
+    // `MetalFrameRenderer.render` documents that its byte is stylized brightness only for
+    // `.postToneMapSDR`; for every other background it is a palette INDEX (0…N-1). Nothing
+    // downstream maps indices back to colours — `ExportSession` writes the byte straight into the
+    // luma plane and `PreviewSnapshot.makeGrayscaleImage` reads it straight as grey — so with the
+    // 2-colour default palette an index render is {0, 1}: two shades of black.
+    //
+    // This is the test the suite never had. Every existing check compares the pipeline against
+    // ITSELF (preview-vs-export parity, the pinned EXPORT_GOLDEN hash), so all of them held
+    // perfectly while the whole pipeline emitted black.
+    func testDefaultSettingsRenderBrightnessNotPaletteIndices() async throws {
+        let width = 64, height = 16
+        let gradient = (0..<(width * height)).map { UInt8(truncatingIfNeeded: ($0 % width) * 4) }
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .export, scale: 1)
+        let out = try await MetalFrameRenderer().render(
+            request: request, settings: LifecycleCoordinator.defaultSettings.render,
+            pixels: gradient, sourceWidth: width, sourceHeight: height)
+        XCTAssertEqual(Set(out), [0, 255],
+                       "A 2-colour black/white palette MUST render as {0, 255} brightness, not {0, 1} indices")
+        XCTAssertEqual(out.count, width * height)
+    }
+
+    // The consequence the user actually sees: a varied source MUST NOT come out uniform. An index
+    // render collapses this gradient to a single luma level once written; brightness does not.
+    func testExportedFrameOfAVariedSourceIsNotUniform() async throws {
+        let width = 64, height = 16
+        let gradient = (0..<(width * height)).map { UInt8(truncatingIfNeeded: ($0 % width) * 4) }
+        let source = ExportSource(pixels: gradient, sourceWidth: width, sourceHeight: height, presentationTime: 0)
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: LifecycleCoordinator.defaultSettings)
+        _ = try await session.export(sources: [source], audio: .none, audioSource: nil, outputURL: url)
+
+        let written = AVURLAsset(url: url)
+        let videoTracks = try await written.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videoTracks.first)
+        let reader = try AVAssetReader(asset: written)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        let sample = try XCTUnwrap(output.copyNextSampleBuffer(), "The export MUST contain a readable frame")
+        let buffer = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, 0))
+            .assumingMemoryBound(to: UInt8.self)
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let planeWidth = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let planeHeight = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        var minimum = UInt8.max, maximum = UInt8.min
+        for y in 0..<planeHeight {
+            for x in 0..<planeWidth {
+                let value = base[y * bytesPerRow + x]
+                minimum = min(minimum, value); maximum = max(maximum, value)
+            }
+        }
+        XCTAssertGreaterThan(Int(maximum) - Int(minimum), 32,
+                             "A gradient source MUST NOT export as a near-uniform frame (min=\(minimum) max=\(maximum))")
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }
