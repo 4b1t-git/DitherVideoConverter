@@ -273,6 +273,11 @@ actor ExportSession {
 /// video loop before each frame append, so audio is PTS-interleaved by ONE writer on ONE thread
 /// — no `requestMediaDataWhenReady` callback queue, no mutual wait between two dispatch queues.
 private final class AudioPump {
+    /// MUST be stored, not a local in `init`. `AVAssetReaderTrackOutput` does not keep its
+    /// reader alive; if the reader is deallocated, every later `copyNextSampleBuffer()` raises
+    /// `NSInternalInconsistencyException` claiming the output was never added or started. That
+    /// failure is intermittent because it depends on when ARC releases the reader.
+    private let reader: AVAssetReader
     private let output: AVAssetReaderTrackOutput
     let input: AVAssetWriterInput
     private var pending: CMSampleBuffer?
@@ -280,12 +285,12 @@ private final class AudioPump {
 
     init(attachment: AudioAttachment) throws {
         guard let asset = attachment.track.asset else { throw ExportError.writerRejected("audio track has no asset") }
-        let reader = try AVAssetReader(asset: asset)
+        reader = try AVAssetReader(asset: asset)
         output = AVAssetReaderTrackOutput(track: attachment.track, outputSettings: attachment.decision.readerOutputSettings)
-        guard reader.canAdd(output) else { throw ExportError.writerRejected("audio reader rejected the track") }
-        reader.add(output)
         input = AVAssetWriterInput(mediaType: .audio, outputSettings: attachment.decision.writerOutputSettings,
                                    sourceFormatHint: attachment.decision.sourceFormatHint)
+        guard reader.canAdd(output) else { throw ExportError.writerRejected("audio reader rejected the track") }
+        reader.add(output)
         guard reader.startReading() else { throw ExportError.writerRejected("audio reader failed to start") }
     }
 
