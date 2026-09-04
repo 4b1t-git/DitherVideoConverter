@@ -141,6 +141,43 @@ final class PreviewTests: XCTestCase {
         print("PREVIEW_HARNESS frames=\(snapshots.count) timestamps=0,15,30,45,60 scale=0.5 pixelsPerFrame=128 compoundHash=\(hash) scope=deterministic-no-live-AVPlayer-live-loop-deferred-to-Unit-8")
     }
 
+    // R3-011 (preview-render-wiring): the on-screen preview MUST be able to draw the snapshot as a
+    // single 8-bit grayscale `CGImage` rather than one fill per pixel. The image's geometry is the
+    // request's geometry — never the source's, and never the byte count's.
+    func testGrayscaleImageMatchesRequestDimensions() throws {
+        let request = RenderRequest(timestamp: 0, width: 4, height: 3, intent: .preview, scale: 0.5)
+        let snapshot = PreviewSnapshot(request: request, pixels: [UInt8](repeating: 128, count: 4 * 3))
+        let image = try XCTUnwrap(snapshot.makeGrayscaleImage(), "A fully-populated snapshot MUST produce an image")
+        XCTAssertEqual(image.width, 4, "Image width MUST come from RenderRequest.width")
+        XCTAssertEqual(image.height, 3, "Image height MUST come from RenderRequest.height")
+    }
+
+    // A truncated snapshot MUST fail closed: returning an image over a short buffer would let
+    // CoreGraphics read past the end of the array. `nil` is the only safe answer.
+    func testGrayscaleImageIsNilWhenPixelsAreShorterThanRequest() {
+        let request = RenderRequest(timestamp: 0, width: 8, height: 8, intent: .preview, scale: 0.5)
+        let short = PreviewSnapshot(request: request, pixels: [UInt8](repeating: 7, count: 8 * 8 - 1))
+        XCTAssertNil(short.makeGrayscaleImage(), "A snapshot shorter than width*height MUST NOT produce an image")
+        let empty = PreviewSnapshot(request: RenderRequest(timestamp: 0, width: 0, height: 0, intent: .preview, scale: 1),
+                                    pixels: [])
+        XCTAssertNil(empty.makeGrayscaleImage(), "A zero-sized request MUST NOT produce an image")
+    }
+
+    // Dimensions alone would pass with an all-black image: assert the real luma VALUES survive the
+    // trip through `CGDataProvider` untouched (bytesPerRow == width, no padding, no premultiply).
+    func testGrayscaleImageRoundTripsPixelValues() throws {
+        let width = 4, height = 2
+        let ramp: [UInt8] = [0, 17, 200, 255, 33, 90, 128, 254]
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .preview, scale: 1)
+        let image = try XCTUnwrap(PreviewSnapshot(request: request, pixels: ramp).makeGrayscaleImage())
+        XCTAssertEqual(image.bitsPerComponent, 8)
+        XCTAssertEqual(image.bytesPerRow, width, "bytesPerRow MUST equal width so rows are tightly packed")
+        let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+        XCTAssertEqual(Array(data.prefix(width)), Array(ramp.prefix(width)),
+                       "The first row's grayscale bytes MUST equal the snapshot's own bytes")
+        XCTAssertEqual(Array(data), ramp, "Every grayscale byte MUST round-trip unchanged")
+    }
+
     private func makePipeline(scale: Double) async throws -> PreviewPipeline {
         PreviewPipeline(renderer: MetalFrameRenderer(), settings: try settings(), previewScale: scale)
     }

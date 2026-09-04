@@ -179,6 +179,76 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(PreviewFrameView(snapshot: nil), PreviewFrameView(snapshot: nil), "Empty frames MUST be equal (R3-010)")
     }
 
+    // R3-011 (preview-render-wiring): the preview render is BOUNDED so the published snapshot and
+    // the on-screen image stay cheap regardless of source size. The scale is a pure function, and
+    // it MUST stay inside (0, 1] — `PreviewPipeline.makeRequest` throws on anything else.
+    func testPreviewScaleBoundsSourceToMaximumDimension() {
+        XCTAssertEqual(LifecycleCoordinator.previewScale(sourceWidth: 16, sourceHeight: 32), 1.0,
+                       "A source already under the bound MUST render at full preview scale")
+        let scale = LifecycleCoordinator.previewScale(sourceWidth: 1920, sourceHeight: 1080)
+        XCTAssertGreaterThan(scale, 0, "Preview scale MUST stay strictly positive")
+        XCTAssertLessThanOrEqual(scale, 1.0, "Preview scale MUST never upscale")
+        XCTAssertEqual(Int((1920.0 * scale).rounded()), LifecycleCoordinator.previewMaximumDimension,
+                       "The longest side MUST land exactly on the preview bound")
+        XCTAssertEqual(LifecycleCoordinator.previewScale(sourceWidth: 0, sourceHeight: 0), 1.0,
+                       "A degenerate 0x0 source MUST NOT divide by zero (never 0, never infinity)")
+    }
+
+    // A successful import MUST actually put a rendered frame on screen, and that frame MUST be a
+    // bounded `.preview` render — not a full-resolution export-intent one.
+    func testImportRendersBoundedPreviewSnapshot() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let snapshot = try XCTUnwrap(coordinator.previewSnapshot, "A successful import MUST render the first frame")
+        XCTAssertEqual(snapshot.request.intent, .preview, "The imported frame MUST render with preview intent")
+        XCTAssertLessThanOrEqual(snapshot.request.width, LifecycleCoordinator.previewMaximumDimension)
+        XCTAssertLessThanOrEqual(snapshot.request.height, LifecycleCoordinator.previewMaximumDimension)
+        XCTAssertEqual(snapshot.pixels.count, snapshot.request.width * snapshot.request.height)
+    }
+
+    // An out-of-range index is a programming no-op, NOT a user-visible failure: the currently
+    // displayed frame survives untouched and no error is surfaced.
+    func testShowFrameOutOfRangeLeavesSnapshotAndErrorUntouched() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let before = try XCTUnwrap(coordinator.previewSnapshot)
+        await coordinator.showFrame(at: coordinator.importedFrameCount)
+        XCTAssertEqual(coordinator.previewSnapshot, before, "An index past the end MUST leave the shown frame untouched")
+        await coordinator.showFrame(at: -1)
+        XCTAssertEqual(coordinator.previewSnapshot, before, "A negative index MUST leave the shown frame untouched")
+        XCTAssertNil(coordinator.lastError, "An out-of-range index MUST NOT surface a user-visible error")
+    }
+
+    // Without an import there is nothing to show: no snapshot, and still no error.
+    func testShowFrameWithoutImportLeavesPreviewEmpty() async {
+        let coordinator = LifecycleCoordinator()
+        await coordinator.showFrame(at: 0)
+        XCTAssertNil(coordinator.previewSnapshot, "No import MUST mean no preview snapshot")
+        XCTAssertNil(coordinator.lastError, "Showing a frame with nothing imported MUST NOT surface an error")
+    }
+
+    // Navigation: advancing to a later frame shows THAT frame's real presentation time (VFR-safe),
+    // never an index-derived value.
+    func testShowFrameAdvancesPreviewTimestampToFramePresentationTime() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let sources = try XCTUnwrap(coordinator.importedSources)
+        XCTAssertGreaterThan(sources.count, 2, "The fixture MUST provide more than two frames to advance through")
+        XCTAssertEqual(coordinator.previewState.currentTimestamp, sources[0].presentationTime)
+        await coordinator.showFrame(at: 2)
+        XCTAssertEqual(coordinator.previewState.currentTimestamp, sources[2].presentationTime,
+                       "Advancing MUST track the shown frame's own presentation time")
+        XCTAssertEqual(coordinator.previewSnapshot?.request.timestamp, sources[2].presentationTime,
+                       "The rendered snapshot MUST carry the shown frame's presentation time")
+        XCTAssertNil(coordinator.lastError)
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }

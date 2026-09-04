@@ -28,15 +28,71 @@ final class LifecycleCoordinator: ObservableObject {
     @Published private(set) var preflightDisclosure: String?
     @Published private(set) var completionDisclosure: String?
     @Published private(set) var lastError: String?
+    /// The frame currently on screen. UNLIKE `importedSources` this one IS `@Published`: the
+    /// preview render is bounded by `previewMaximumDimension`, so the published payload is at most
+    /// ~240×240 bytes — small enough to diff through `objectWillChange` on every scrub, where the
+    /// unbounded multi-megabyte source array is not.
+    @Published private(set) var previewSnapshot: PreviewSnapshot?
     let previewState = PreviewState()
     private let renderer: MetalFrameRenderer
     private let exportSettings: ExportSettings
+    /// Preview and export share the SOLE `MetalFrameRenderer` and the SAME `RenderSettings`; the
+    /// preview differs only by `RenderRequest.scale` (R3-003). Constructing a second renderer here
+    /// would break intent-invariance between what the user sees and what gets written.
+    private let previewPipeline: PreviewPipeline
+    /// Monotonic scrub token. `PreviewPipeline` coalesces on it, so a superseded frame request can
+    /// never overwrite a newer one's result.
+    private var scrubToken: UInt64 = 0
     private var exportSession: ExportSession?
     private let log = Logger(subsystem: "com.gentleai.AnciiVideoGenerator", category: "lifecycle")
     private let signposter = OSSignposter(subsystem: "com.gentleai.AnciiVideoGenerator", category: "lifecycle-export")
 
     init(renderer: MetalFrameRenderer = MetalFrameRenderer(), settings: ExportSettings = LifecycleCoordinator.defaultSettings) {
         self.renderer = renderer; self.exportSettings = settings
+        self.previewPipeline = PreviewPipeline(renderer: renderer, settings: settings.render, previewScale: 1.0)
+    }
+
+    /// Longest side, in pixels, the preview render is allowed to produce. The preview is bounded
+    /// (rather than rendered at source resolution and shrunk on screen) so both the render cost and
+    /// the published `previewSnapshot` stay constant no matter how large the imported clip is.
+    static let previewMaximumDimension = 240
+
+    /// Preview scale for a source of the given size: shrink so the longest side lands on
+    /// `previewMaximumDimension`, never upscale. Pure and total — a degenerate (zero or negative)
+    /// source yields `1.0` rather than a division by zero, because `PreviewPipeline.makeRequest`
+    /// throws `invalidDimensions` for anything outside `(0, 1]`.
+    static func previewScale(sourceWidth: Int, sourceHeight: Int) -> Double {
+        let longest = max(sourceWidth, sourceHeight)
+        guard longest > 0 else { return 1.0 }
+        return min(1.0, Double(previewMaximumDimension) / Double(longest))
+    }
+
+    /// Renders the imported frame at `index` into `previewSnapshot` and tracks its timestamp.
+    ///
+    /// An absent import or an out-of-range index is a programming no-op, NOT a user-visible
+    /// failure: nothing is shown, nothing is cleared, and `lastError` stays untouched so the UI
+    /// never reports an error the user cannot act on.
+    func showFrame(at index: Int) async {
+        guard let sources = importedSources, sources.indices.contains(index) else { return }
+        let frame = sources[index]
+        scrubToken &+= 1
+        let token = scrubToken
+        await previewPipeline.update(previewScale: LifecycleCoordinator.previewScale(
+            sourceWidth: frame.sourceWidth, sourceHeight: frame.sourceHeight))
+        do {
+            let snapshot = try await previewPipeline.scrub(token: token, timestamp: frame.presentationTime,
+                                                          source: frame.pixels,
+                                                          sourceWidth: frame.sourceWidth,
+                                                          sourceHeight: frame.sourceHeight)
+            // A `nil` result means the pipeline coalesced this request away as stale — a NEWER
+            // frame already won. Assigning `nil` here would blank the screen behind that newer
+            // frame, so the currently displayed snapshot MUST survive untouched.
+            if let snapshot { previewSnapshot = snapshot }
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            log.error("preview render failed: \(self.lastError ?? "")")
+        }
+        previewState.scrub(to: frame.presentationTime)
     }
 
     /// Default export settings (a 2-color bayer palette at scale 1). Constructed once; throws are
@@ -53,7 +109,9 @@ final class LifecycleCoordinator: ObservableObject {
     func importAsset(_ asset: AVAsset, maximumDimension: Int = 4_096) async {
         // Reset stored state FIRST so a failed or unsupported re-import can never leave a
         // previous import's frames reachable (D4b, "Stored state added to LifecycleCoordinator").
-        importedSources = nil; importedFrameCount = 0
+        // `previewSnapshot` resets with them: a failed or unsupported re-import MUST NOT leave the
+        // previous clip's frame on screen.
+        importedSources = nil; importedFrameCount = 0; previewSnapshot = nil
         phase = .importing; previewState.setImporting()
         let s = signposter.beginInterval("import")
         let report = await AssetValidator.validate(asset, maximumDimension: maximumDimension)
@@ -72,6 +130,9 @@ final class LifecycleCoordinator: ObservableObject {
                 log.error("import extraction failed: \(self.lastError ?? "")")
             }
             phase = .ready; previewState.setReady(timestamp: 0)
+            // Put a real rendered frame on screen; a successful import that shows nothing would be
+            // indistinguishable from a failed one. No-ops when extraction yielded nothing.
+            await showFrame(at: 0)
         } else {
             phase = .unsupported; previewState.setUnsupported(report.violation?.errorDescription ?? report.summary)
         }

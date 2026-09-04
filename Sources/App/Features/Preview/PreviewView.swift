@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// SwiftUI preview surface. The frame `Canvas` (R3-010) is split into `PreviewFrameView`, whose
+/// SwiftUI preview surface. The frame image (R3-010) is split into `PreviewFrameView`, whose
 /// `Equatable` conformance depends ONLY on the snapshot, so a per-timestamp overlay bump does NOT
-/// repaint the O(W×H) canvas. The live `AVPlayer`/`AVPlayerItemVideoOutput`/`CVDisplayLink` loop
+/// repaint the frame. The live `AVPlayer`/`AVPlayerItemVideoOutput`/`CVDisplayLink` loop
 /// is deferred to a follow-up live-preview slice; this is the deterministic declarative surface
 /// driven by `PreviewState` + `PreviewSnapshot`.
 struct PreviewView: View {
@@ -18,23 +18,25 @@ struct PreviewView: View {
     }
 }
 
-/// Frame canvas; wrapped in `EquatableView` by `PreviewView` so SwiftUI re-renders it ONLY when the
+/// Frame image; wrapped in `EquatableView` by `PreviewView` so SwiftUI re-renders it ONLY when the
 /// snapshot changes. A timestamp-only overlay bump leaves this view's inputs equal → skipped (R3-010).
+///
+/// The snapshot is drawn as ONE grayscale `CGImage` rather than one filled rect per pixel: the
+/// previous `Canvas` path issued O(W×H) draw calls per repaint, which only survived because the
+/// test fixture is 16×8. Interpolation is explicitly OFF — this is a dither/ASCII renderer, so
+/// smoothing the upscale would blend neighbouring cells and misrepresent the very output the user
+/// is inspecting. A `nil` snapshot, or a snapshot too short for its own request, renders the empty
+/// placeholder instead of crashing.
 struct PreviewFrameView: View, Equatable {
     let snapshot: PreviewSnapshot?
     var body: some View {
-        Canvas { context, size in
-            guard let snapshot else { return }
-            let request = snapshot.request
-            let cell = CGSize(width: size.width / Double(request.width), height: size.height / Double(request.height))
-            for y in 0..<request.height {
-                for x in 0..<request.width {
-                    let value = snapshot.pixels[y * request.width + x]
-                    let rect = CGRect(x: Double(x) * cell.width, y: Double(y) * cell.height,
-                                      width: cell.width, height: cell.height)
-                    context.fill(Path(roundedRect: rect, cornerRadius: 0),
-                                 with: .color(Color(white: Double(value) / 255, opacity: 1)))
-                }
+        ZStack {
+            Color.clear
+            if let image = snapshot?.makeGrayscaleImage() {
+                Image(decorative: image, scale: 1)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
             }
         }
         .accessibilityHidden(true)
