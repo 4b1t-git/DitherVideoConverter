@@ -12,6 +12,23 @@ struct ExportSource: Sendable, Equatable {
 
 enum ExportAudioMode: Sendable, Equatable { case none, passthrough, aacFallback }
 
+/// D4-locked audio actor-boundary box (`export-audio`). `AudioPolicyDecision` genuinely holds
+/// non-`Sendable` members (`[String: Any]?` reader/writer settings, `CMAudioFormatDescription?`
+/// source hint), so it cannot cross into `ExportSession` (an actor) unmarked. `@unchecked
+/// Sendable` is safe here specifically because BOTH wrapped members are immutable after
+/// `AudioPolicy.decision` constructs them: no caller mutates `decision` or reassigns `track`
+/// after building this box, so there is no concurrent-mutation hazard for the actor to observe —
+/// the safety argument rests entirely on that immutability-after-load, not on any locking.
+struct AudioAttachment: @unchecked Sendable {
+    let decision: AudioPolicyDecision
+    let track: AVAssetTrack
+}
+
+/// Shared bound for the readiness spins on BOTH the video and audio `AVAssetWriterInput`s
+/// (H5-070). An injected/default readiness predicate that never resolves would otherwise spin
+/// forever; this converts that into an actionable `writerRejected` failure instead of a hang.
+private let backpressureDeadlineSeconds: TimeInterval = 5
+
 enum ExportStage: Sendable, Equatable { case rendering, encoding, finalizing, completed, cancelled, failed }
 
 struct ExportProgress: Sendable, Equatable { let stage: ExportStage; let fractionCompleted: Double }
@@ -96,7 +113,7 @@ actor ExportSession {
         checkpointBeforeFinalize = checkpoint
     }
 
-    func export(sources: [ExportSource], audio: ExportAudioMode, outputURL: URL) async throws -> ExportResult {
+    func export(sources: [ExportSource], audio: ExportAudioMode, audioSource: AudioAttachment? = nil, outputURL: URL) async throws -> ExportResult {
         guard !sources.isEmpty else { throw ExportError.noFrames }
         guard !isRunning else { throw ExportError.alreadyRunning }
         isRunning = true
@@ -117,6 +134,15 @@ actor ExportSession {
         ])
         guard writer.canAdd(videoInput) else { try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("video input rejected") }
         writer.add(videoInput)
+        // D4: the audio input (passthrough source-format hint, or AAC writer settings per
+        // `decision`) MUST be added BEFORE startWriting, exactly like the video input above.
+        var pump: AudioPump?
+        if let audioSource {
+            let p = try AudioPump(attachment: audioSource)
+            guard writer.canAdd(p.input) else { try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("audio input rejected") }
+            writer.add(p.input)
+            pump = p
+        }
         guard writer.startWriting() else { try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("startWriting failed") }
         writer.startSession(atSourceTime: .zero)
         progress = ExportProgress(stage: .encoding, fractionCompleted: 0)
@@ -132,9 +158,14 @@ actor ExportSession {
             // — appending while it is false is an AVFoundation contract violation regardless of
             // the injected seam, so a writer-only stall must sleep-and-retry WITHOUT evicting a
             // still-legitimately-retained buffer. Only a bound violation (`!boundReady`) drains.
+            let boundDeadline = Date().addingTimeInterval(backpressureDeadlineSeconds)
             while true {
                 let boundReady = mediaDataReadiness?(outstandingBuffers) ?? (pending.count < bufferBound)
                 if boundReady && videoInput.isReadyForMoreMediaData { break }
+                guard Date() < boundDeadline else {
+                    progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
+                    try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("video backpressure timeout")
+                }
                 backpressureWaitCount += 1
                 if !boundReady, !pending.isEmpty {
                     pending.removeFirst()
@@ -153,6 +184,15 @@ actor ExportSession {
             outstandingBuffers += 1
             maxObservedBuffers = max(maxObservedBuffers, outstandingBuffers)   // real observed maximum, not a fabricated constant.
             let pts = CMTime(seconds: src.presentationTime, preferredTimescale: 600)
+            // D4 interleave: audio is drained by the SAME single task, up to this video frame's
+            // PTS, before the video append — one writer, one thread, no `requestMediaDataWhenReady`.
+            if let pump {
+                do { try await pump.drain(upTo: pts) }
+                catch {
+                    progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
+                    try? FileManager.default.removeItem(at: outputURL); throw error
+                }
+            }
             guard adaptor.append(pixel, withPresentationTime: pts) else {
                 progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
                 try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("append failed at frame \(index)")
@@ -172,6 +212,15 @@ actor ExportSession {
             throw ExportError.cancelled
         }
         videoInput.markAsFinished()
+        // Both inputs MUST be marked finished before finishWriting (D4); `pump.finish()` drains
+        // every remaining audio sample and marks its own input finished internally.
+        if let pump {
+            do { try await pump.finish() }
+            catch {
+                progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
+                try? FileManager.default.removeItem(at: outputURL); throw error
+            }
+        }
         progress = ExportProgress(stage: .finalizing, fractionCompleted: 0.99)
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in writer.finishWriting { cont.resume() } }
         if writer.status == .cancelled { try? FileManager.default.removeItem(at: outputURL); throw ExportError.cancelled }
@@ -212,5 +261,92 @@ actor ExportSession {
          AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                                      AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                                      AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2]]
+    }
+}
+
+/// D4-locked audio interleave engine. Created and consumed entirely inside a single
+/// `ExportSession.export` call — it never escapes the actor's isolation domain, so it needs no
+/// `Sendable` conformance of its own. Wraps an `AVAssetReader` + `AVAssetReaderTrackOutput`
+/// (settings from `decision.readerOutputSettings`) reading the attached track, and the
+/// `AVAssetWriterInput` that same track's samples are written back out through (passthrough
+/// source-format hint, or AAC writer settings, per `decision`). `drain(upTo:)` is called by the
+/// video loop before each frame append, so audio is PTS-interleaved by ONE writer on ONE thread
+/// — no `requestMediaDataWhenReady` callback queue, no mutual wait between two dispatch queues.
+private final class AudioPump {
+    private let output: AVAssetReaderTrackOutput
+    let input: AVAssetWriterInput
+    private var pending: CMSampleBuffer?
+    private var epoch: CMTime?
+
+    init(attachment: AudioAttachment) throws {
+        guard let asset = attachment.track.asset else { throw ExportError.writerRejected("audio track has no asset") }
+        let reader = try AVAssetReader(asset: asset)
+        output = AVAssetReaderTrackOutput(track: attachment.track, outputSettings: attachment.decision.readerOutputSettings)
+        guard reader.canAdd(output) else { throw ExportError.writerRejected("audio reader rejected the track") }
+        reader.add(output)
+        input = AVAssetWriterInput(mediaType: .audio, outputSettings: attachment.decision.writerOutputSettings,
+                                   sourceFormatHint: attachment.decision.sourceFormatHint)
+        guard reader.startReading() else { throw ExportError.writerRejected("audio reader failed to start") }
+    }
+
+    /// Appends every buffered sample whose (epoch-shifted) PTS is `<= pts`, pulling more samples
+    /// from the reader as needed. Never appends while `input.isReadyForMoreMediaData` is false —
+    /// the same AVFoundation contract H2 proved for the video input governs this input too.
+    func drain(upTo pts: CMTime) async throws {
+        while true {
+            if pending == nil { pending = try nextShiftedSample() }
+            guard let sample = pending, CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), pts) <= 0 else { return }
+            try await waitUntilReady()
+            guard input.append(sample) else { throw ExportError.writerRejected("audio append failed") }
+            pending = nil
+        }
+    }
+
+    /// Drains every remaining reader sample, then marks the audio input finished.
+    func finish() async throws {
+        while true {
+            if pending == nil { pending = try nextShiftedSample() }
+            guard let sample = pending else { break }
+            try await waitUntilReady()
+            guard input.append(sample) else { throw ExportError.writerRejected("audio append failed") }
+            pending = nil
+        }
+        input.markAsFinished()
+    }
+
+    /// Pulls the next reader sample and shifts its timing so retained audio starts at the same
+    /// zero-based epoch as the video timeline (verbatim port of
+    /// `AudioPolicyTests.shifted(_:by:)`'s PTS epoch-shift mechanism into production).
+    private func nextShiftedSample() throws -> CMSampleBuffer? {
+        guard let sample = output.copyNextSampleBuffer() else { return nil }
+        let origin = epoch ?? CMSampleBufferGetPresentationTimeStamp(sample)
+        epoch = origin
+        return try shifted(sample, by: origin)
+    }
+
+    private func shifted(_ sample: CMSampleBuffer, by epoch: CMTime) throws -> CMSampleBuffer {
+        var needed = 0
+        CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: 0, arrayToFill: nil, entriesNeededOut: &needed)
+        var timing = Array(repeating: CMSampleTimingInfo(), count: needed)
+        CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: needed, arrayToFill: &timing, entriesNeededOut: &needed)
+        for index in timing.indices {
+            timing[index].presentationTimeStamp = CMTimeSubtract(timing[index].presentationTimeStamp, epoch)
+            if timing[index].decodeTimeStamp.isNumeric {
+                timing[index].decodeTimeStamp = CMTimeSubtract(timing[index].decodeTimeStamp, epoch)
+            }
+        }
+        var copy: CMSampleBuffer?
+        let result = CMSampleBufferCreateCopyWithNewTiming(allocator: nil, sampleBuffer: sample,
+            sampleTimingEntryCount: timing.count, sampleTimingArray: &timing, sampleBufferOut: &copy)
+        guard result == noErr, let copy else { throw ExportError.writerRejected("audio sample timing shift failed") }
+        return copy
+    }
+
+    private func waitUntilReady() async throws {
+        let deadline = Date().addingTimeInterval(backpressureDeadlineSeconds)
+        while !input.isReadyForMoreMediaData {
+            guard Date() < deadline else { throw ExportError.writerRejected("audio backpressure timeout") }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
     }
 }
