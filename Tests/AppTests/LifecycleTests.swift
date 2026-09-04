@@ -281,6 +281,78 @@ final class LifecycleTests: XCTestCase {
         XCTAssertNil(coordinator.lastError, "Coalescing a stale scrub is not an error")
     }
 
+    // Slice B (import-export-ui): the UI never constructs an `AVAsset` itself, so the whole import
+    // path MUST be reachable from a plain file `URL`. `openAsset(url:)` MUST land in exactly the
+    // same state as the `importAsset(_:)` entry point the earlier tests drive.
+    func testOpenAssetFromFileURLReachesReadyWithFramesAndSnapshot() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.openAsset(url: fixture.videoURL)
+        XCTAssertEqual(coordinator.phase, .ready, "Opening a supported file URL MUST navigate to .ready")
+        XCTAssertEqual(coordinator.validation?.isSupported, true, "Opening a file URL MUST populate the validation report")
+        XCTAssertGreaterThan(coordinator.importedFrameCount, 0, "Opening a file URL MUST extract frames")
+        XCTAssertNotNil(coordinator.previewSnapshot, "Opening a file URL MUST put a rendered frame on screen")
+        XCTAssertTrue(coordinator.exportReady, "A supported import with frames MUST make export reachable")
+    }
+
+    // Slice B: the file panel hands back whatever the user picked; a URL that no longer resolves
+    // MUST degrade to the ordinary unsupported surface (actionable reason, export unreachable)
+    // rather than crashing or silently pretending the import worked.
+    func testOpenAssetWithMissingFileStaysUnsupportedAndKeepsExportUnreachable() async {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("slice-b-missing-\(UUID().uuidString).mov")
+        let coordinator = LifecycleCoordinator()
+        await coordinator.openAsset(url: missing)
+        XCTAssertFalse(coordinator.exportReady, "A URL that does not resolve MUST leave export unreachable")
+        XCTAssertEqual(coordinator.validation?.isSupported, false, "A missing file MUST report an unsupported validation")
+        XCTAssertFalse(coordinator.validation?.summary.isEmpty ?? true, "A missing file MUST surface an actionable reason")
+        XCTAssertEqual(coordinator.importedFrameCount, 0, "A missing file MUST leave no imported frames")
+    }
+
+    // Slice B: `exportEnabled` is TRUE for a supported asset whose extraction failed, so the UI
+    // MUST gate on `exportReady` instead — offering an export that is guaranteed to fail with
+    // `noFrames` is not an offer.
+    func testExportReadyRequiresBothSupportedValidationAndExtractedFrames() async throws {
+        let coordinator = LifecycleCoordinator()
+        XCTAssertFalse(coordinator.exportReady, "A fresh coordinator has nothing to export")
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        await coordinator.openAsset(url: fixture.videoURL)
+        XCTAssertTrue(coordinator.exportReady, "A supported import with frames MUST be export-ready")
+        await coordinator.importAsset(AVURLAsset(url: URL(string: "https://example.invalid/clip.mov")!))
+        XCTAssertFalse(coordinator.exportReady, "An unsupported re-import MUST withdraw export readiness")
+        XCTAssertEqual(coordinator.importedFrameCount, 0, "An unsupported re-import MUST drop the previous frames")
+    }
+
+    // Slice B: the UI export entry point MUST reuse the stored frames from the last import — it
+    // passes no `sources:` argument at all, because an explicit `[]` is `.some([])` and would
+    // defeat the stored-frame fallback.
+    func testExportToFileWritesTheImportedFramesAndDisclosesCompletion() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.openAsset(url: fixture.videoURL)
+        await coordinator.exportToFile(url: url)
+        XCTAssertEqual(coordinator.phase, .exported, "A UI export of an imported clip MUST navigate to .exported")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "A UI export MUST leave the output file")
+        XCTAssertFalse(coordinator.completionDisclosure?.isEmpty ?? true, "A UI export MUST disclose its audio policy")
+        XCTAssertFalse(coordinator.isExporting, "A finished export MUST NOT still report itself as exporting")
+    }
+
+    // Slice B: the menu item and the button both gate on `exportReady`, but a stale gate (or a
+    // keyboard shortcut fired mid-teardown) MUST still fail safely — no file, an actionable error.
+    func testExportToFileWithoutImportFailsWithoutWritingAFile() async {
+        let url = exportURL()
+        let coordinator = LifecycleCoordinator()
+        await coordinator.exportToFile(url: url)
+        XCTAssertEqual(coordinator.phase, .failed, "A UI export with nothing imported MUST fail")
+        XCTAssertFalse(coordinator.lastError?.isEmpty ?? true, "A failed UI export MUST surface an actionable error")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "A failed UI export MUST NOT leave a file")
+    }
+
     /// `FrameRendering` double that delegates to the real renderer but can hold a chosen
     /// `request.timestamp` at the suspension point until the test releases it. Everything not
     /// explicitly held passes straight through, so `importAsset`'s own frame-0 render is unaffected.

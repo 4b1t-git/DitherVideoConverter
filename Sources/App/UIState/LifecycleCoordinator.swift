@@ -118,6 +118,46 @@ final class LifecycleCoordinator: ObservableObject {
     /// Processing is enabled only after a supported import and never during an active export.
     var exportEnabled: Bool { validation?.isSupported == true && phase != .exporting }
 
+    /// What the UI actually gates the export affordance on. `exportEnabled` is deliberately TRUE
+    /// for a supported asset whose frame extraction failed — the asset genuinely IS supported, and
+    /// D4b point 5 defers that consequence to the export itself. The UI cannot afford that
+    /// deferral: offering an export that is guaranteed to fail with `noFrames` is not an offer, so
+    /// the control also requires frames to actually exist.
+    var exportReady: Bool { exportEnabled && importedFrameCount > 0 }
+
+    /// True while a write is in flight. The UI disables the destructive controls (Open, Export) on
+    /// it and shows Cancel in their place, so the same lifecycle phase drives both directions.
+    var isExporting: Bool { phase == .exporting }
+
+    /// Imports from a plain file `URL` — the single entry point the UI layer uses, so no view ever
+    /// constructs an `AVAsset` itself and the whole import path stays reachable from a unit test
+    /// that only has a URL.
+    ///
+    /// The `AVURLAsset` is built directly from the panel's URL with no security-scoped bookmark
+    /// dance: this app is NOT sandboxed (`Config/Base.xcconfig` sets `CODE_SIGNING_ALLOWED = NO`,
+    /// there is no entitlements file, and `ENABLE_APP_SANDBOX` is never set), so `NSOpenPanel`
+    /// hands back a plainly readable URL. `startAccessingSecurityScopedResource` would be dead
+    /// code here, and pretending otherwise would hide the day sandboxing IS turned on.
+    func openAsset(url: URL, maximumDimension: Int = 4_096) async {
+        await importAsset(AVURLAsset(url: url), maximumDimension: maximumDimension)
+    }
+
+    /// Exports the frames stored by the last import to `url` — the UI's export entry point.
+    ///
+    /// No `sources:` argument is passed ON PURPOSE: the parameter is `[ExportSource]?`, so an
+    /// explicit `[]` would be `.some([])` and would defeat the stored-frame fallback, failing
+    /// `noFrames` on a perfectly good import.
+    ///
+    /// AUDIO IS NOT WIRED YET. `importAsset` stores only the `[ExportSource]` video frames and does
+    /// not retain the source asset's audio track, so a UI export is silent. That is disclosed
+    /// honestly rather than papered over: `export` derives its disclosure from the `nil` track's
+    /// own `AudioPolicyDecision`, not from the requested mode, so the user is told "no audio"
+    /// because there genuinely is none. A follow-up slice will retain the imported audio track and
+    /// pass it here as an `AudioAttachment`.
+    func exportToFile(url: URL) async {
+        await export(audio: .none, audioSource: nil, outputURL: url)
+    }
+
     func importAsset(_ asset: AVAsset, maximumDimension: Int = 4_096) async {
         // Reset stored state FIRST so a failed or unsupported re-import can never leave a
         // previous import's frames reachable (D4b, "Stored state added to LifecycleCoordinator").
