@@ -87,6 +87,27 @@ final class MediaFixtureFactory {
         return MediaFixture(videoURL: video.videoURL, audioURL: url)
     }
 
+    /// A SINGLE asset carrying both a video and an audio track, for the import→export audio
+    /// survival proof (`import-audio-wiring`). The `MediaFixture` shape is deliberately unmuxed
+    /// (D6: video and audio stay independent files so each codec path can be exercised on its
+    /// own), but `LifecycleCoordinator.importAsset` takes ONE asset and can only retain an audio
+    /// track that this same asset carries — proving that wiring needs a muxed input, and only
+    /// this helper produces one. Reuses `makeComposition` rather than authoring a third writer
+    /// path, so the muxed asset's timing is the same already-gated fixture timeline.
+    ///
+    /// The backing files are returned alongside the asset because the composition only REFERENCES
+    /// them: the caller must keep them on disk for the asset's lifetime and delete them after.
+    func makeMuxedAsset(audio format: FixtureAudioFormat) async throws -> (asset: AVAsset, urls: [URL]) {
+        let fixture = try makeCombinedFixture(audio: format)
+        let videoAsset = AVURLAsset(url: fixture.videoURL)
+        let audioAsset = AVURLAsset(url: fixture.audioURL)
+        guard let video = try await videoAsset.loadTracks(withMediaType: .video).first,
+              let audio = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+            throw MediaFixtureError.reading
+        }
+        return (try makeComposition(video: video, audio: audio), fixture.urls)
+    }
+
     func inspect(_ fixture: MediaFixture) async throws -> MediaInspection {
         let videoAsset = AVURLAsset(url: fixture.videoURL)
         let audioAsset = AVURLAsset(url: fixture.audioURL)

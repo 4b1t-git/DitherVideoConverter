@@ -353,6 +353,81 @@ final class LifecycleTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "A failed UI export MUST NOT leave a file")
     }
 
+    // Slice C (import-audio-wiring, #34): a muxed import MUST retain the source asset's audio
+    // track, classified by the SAME `AudioPolicy` the export uses. AAC source audio qualifies for
+    // verified passthrough, so that is the decision the coordinator must have stored.
+    func testImportMuxedAacSourceRetainsPassthroughAudioAttachment() async throws {
+        let (asset, urls) = try await MediaFixtureFactory().makeMuxedAsset(audio: .aac)
+        defer { urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(asset)
+        XCTAssertEqual(coordinator.phase, .ready, "A muxed supported import MUST navigate to .ready")
+        XCTAssertEqual(coordinator.importedAudio?.decision.mode, .passthrough,
+                       "Importing AAC source audio MUST retain a .passthrough attachment")
+        XCTAssertFalse(coordinator.importedAudioDisclosure?.isEmpty ?? true,
+                       "Import MUST disclose the audio verdict before the user commits to a write")
+    }
+
+    // Slice C: LPCM source audio cannot be passed through a .mov, so the retained decision MUST be
+    // the disclosed AAC fallback — the import classifies, it never silently drops the track.
+    func testImportMuxedLpcmSourceRetainsAacFallbackAudioAttachment() async throws {
+        let (asset, urls) = try await MediaFixtureFactory().makeMuxedAsset(audio: .lpcm)
+        defer { urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(asset)
+        XCTAssertEqual(coordinator.importedAudio?.decision.mode, .aacFallback,
+                       "Importing LPCM source audio MUST retain an .aacFallback attachment")
+    }
+
+    // Slice C: a video-only clip has nothing to attach, but the user MUST still be told the export
+    // will be silent — and that sentence comes from the same `.absent` `AudioPolicyDecision` the
+    // export would produce, never from a bespoke literal (the H5 single-source-of-truth invariant).
+    func testImportVideoOnlySourceLeavesNoAttachmentButStillDisclosesAbsentAudio() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        XCTAssertNil(coordinator.importedAudio, "A video-only import MUST leave no audio attachment")
+        let absent = try await AudioPolicy.decision(for: nil)
+        XCTAssertEqual(coordinator.importedAudioDisclosure, absent.disclosure(at: .preflight),
+                       "A video-only import MUST disclose the .absent decision's own preflight text")
+    }
+
+    // Slice C: re-importing MUST drop the previous clip's audio exactly as it drops its frames.
+    // Carrying a stale attachment forward would put the FIRST clip's sound under the SECOND
+    // clip's picture on the next export.
+    func testReimportingAVideoOnlyClipClearsThePreviousClipsAudio() async throws {
+        let (muxed, muxedURLs) = try await MediaFixtureFactory().makeMuxedAsset(audio: .aac)
+        defer { muxedURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let silent = try MediaFixtureFactory().makeFixture()
+        defer { silent.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(muxed)
+        XCTAssertNotNil(coordinator.importedAudio, "The muxed import MUST retain audio before the re-import")
+        await coordinator.importAsset(AVURLAsset(url: silent.videoURL))
+        XCTAssertNil(coordinator.importedAudio,
+                     "A video-only re-import MUST clear the previous clip's audio attachment")
+    }
+
+    // Slice C, the one that closes #34: audio imported through the UI entry point MUST survive
+    // into the file `exportToFile` writes. Asserting EXACTLY one audio track (not merely a
+    // non-zero count) also guards the duplicated-audio-input failure mode.
+    func testExportToFileCarriesTheImportedAudioIntoTheWrittenFile() async throws {
+        let (asset, urls) = try await MediaFixtureFactory().makeMuxedAsset(audio: .aac)
+        defer { urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(asset)
+        await coordinator.exportToFile(url: url)
+        XCTAssertEqual(coordinator.phase, .exported, "A UI export of a muxed clip MUST navigate to .exported")
+        let written = AVURLAsset(url: url)
+        let audioTracks = try await written.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(audioTracks.count, 1, "A UI export MUST carry exactly one audio track into the output")
+        let videoTracks = try await written.loadTracks(withMediaType: .video)
+        XCTAssertEqual(videoTracks.count, 1, "A UI export MUST still write exactly one video track")
+    }
+
     /// `FrameRendering` double that delegates to the real renderer but can hold a chosen
     /// `request.timestamp` at the suspension point until the test releases it. Everything not
     /// explicitly held passes straight through, so `importAsset`'s own frame-0 render is unaffected.

@@ -24,6 +24,17 @@ final class LifecycleCoordinator: ObservableObject {
     /// count, which IS published below.
     internal private(set) var importedSources: [ExportSource]?
     @Published private(set) var importedFrameCount: Int = 0
+    /// The source asset's audio track from the last successful import, already classified by
+    /// `AudioPolicy` (Slice C, `import-audio-wiring`). `internal` (not `private`) so `@testable
+    /// import` can observe it; setter is closed. NOT `@Published`, for the same reason as
+    /// `importedSources`: it boxes an `AVAssetTrack` and an `AudioPolicyDecision`, and the UI has
+    /// no use for either — it cannot draw a track. What the UI CAN show is published below.
+    internal private(set) var importedAudio: AudioAttachment?
+    /// The import-time audio verdict as a user-facing sentence. `@Published` where the attachment
+    /// is not, because this is the piece the UI can actually render — and it MUST be rendered at
+    /// import time: the user has to know whether sound will survive BEFORE committing to a write,
+    /// not after a silent file has already been written over a chosen destination.
+    @Published private(set) var importedAudioDisclosure: String?
     @Published private(set) var exportProgress: ExportProgress?
     @Published private(set) var preflightDisclosure: String?
     @Published private(set) var completionDisclosure: String?
@@ -148,14 +159,14 @@ final class LifecycleCoordinator: ObservableObject {
     /// explicit `[]` would be `.some([])` and would defeat the stored-frame fallback, failing
     /// `noFrames` on a perfectly good import.
     ///
-    /// AUDIO IS NOT WIRED YET. `importAsset` stores only the `[ExportSource]` video frames and does
-    /// not retain the source asset's audio track, so a UI export is silent. That is disclosed
-    /// honestly rather than papered over: `export` derives its disclosure from the `nil` track's
-    /// own `AudioPolicyDecision`, not from the requested mode, so the user is told "no audio"
-    /// because there genuinely is none. A follow-up slice will retain the imported audio track and
-    /// pass it here as an `AudioAttachment`.
+    /// The imported audio track (if the source had one) rides along as `audioSource`, so a UI
+    /// export carries the clip's sound (#34) instead of writing a silent file. The `audio:`
+    /// argument stays `.none` and is IGNORED for wiring on purpose: `export` derives both the
+    /// wired `ExportAudioMode` and the disclosure from the attachment's own `AudioPolicyDecision`
+    /// (H5), so passing the attachment is the whole wiring — a second, parallel path that also
+    /// declared a mode here could only ever disagree with it.
     func exportToFile(url: URL) async {
-        await export(audio: .none, audioSource: nil, outputURL: url)
+        await export(audio: .none, audioSource: importedAudio, outputURL: url)
     }
 
     func importAsset(_ asset: AVAsset, maximumDimension: Int = 4_096) async {
@@ -163,7 +174,11 @@ final class LifecycleCoordinator: ObservableObject {
         // previous import's frames reachable (D4b, "Stored state added to LifecycleCoordinator").
         // `previewSnapshot` resets with them: a failed or unsupported re-import MUST NOT leave the
         // previous clip's frame on screen.
+        // `importedAudio`/`importedAudioDisclosure` reset with the frames and for the same
+        // reason: an unsupported or audio-less re-import MUST NOT carry the previous clip's
+        // sound into the next export.
         importedSources = nil; importedFrameCount = 0; previewSnapshot = nil
+        importedAudio = nil; importedAudioDisclosure = nil
         phase = .importing; previewState.setImporting()
         let s = signposter.beginInterval("import")
         let report = await AssetValidator.validate(asset, maximumDimension: maximumDimension)
@@ -180,6 +195,27 @@ final class LifecycleCoordinator: ObservableObject {
             } catch {
                 lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 log.error("import extraction failed: \(self.lastError ?? "")")
+            }
+            // Retain the source asset's audio track so the UI export is not silent (#34). The
+            // `nil`-track case deliberately still runs through `AudioPolicy.decision`: routing
+            // both the "no audio" and the "real audio" case through the SAME call keeps that one
+            // function the single source of truth for the disclosure (the H5 invariant), so the
+            // two can never drift apart.
+            do {
+                let track = try await asset.loadTracks(withMediaType: .audio).first
+                let decision = try await AudioPolicy.decision(for: track)
+                if let track { importedAudio = AudioAttachment(decision: decision, track: track) }
+                importedAudioDisclosure = decision.disclosure(at: .preflight)
+            } catch {
+                // A track that cannot be classified MUST NOT block the export. Refusing to write
+                // a perfectly good video because its audio could not be read would cost the user
+                // more than losing the audio does — so the error is surfaced, no attachment is
+                // kept, and the disclosure falls back to the `.absent` decision (which never
+                // throws) so the UI states plainly that the export will be silent.
+                lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                log.error("import audio classification failed: \(self.lastError ?? "")")
+                importedAudio = nil
+                importedAudioDisclosure = try? await AudioPolicy.decision(for: nil).disclosure(at: .preflight)
             }
             phase = .ready; previewState.setReady(timestamp: 0)
             // Put a real rendered frame on screen; a successful import that shows nothing would be
