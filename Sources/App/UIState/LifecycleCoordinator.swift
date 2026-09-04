@@ -47,9 +47,17 @@ final class LifecycleCoordinator: ObservableObject {
     private let log = Logger(subsystem: "com.gentleai.AnciiVideoGenerator", category: "lifecycle")
     private let signposter = OSSignposter(subsystem: "com.gentleai.AnciiVideoGenerator", category: "lifecycle-export")
 
-    init(renderer: MetalFrameRenderer = MetalFrameRenderer(), settings: ExportSettings = LifecycleCoordinator.defaultSettings) {
+    /// `previewRenderer` is a TEST SEAM and nothing else: production passes `nil`, so preview and
+    /// export share the sole `MetalFrameRenderer` (R3-003 intent-invariance). Tests substitute a
+    /// gated `FrameRendering` double to interleave two concurrent `showFrame` calls around the
+    /// renderer's suspension point, which is the only way to observe stale-result handling without
+    /// sleeps or timing tolerances.
+    init(renderer: MetalFrameRenderer = MetalFrameRenderer(),
+         settings: ExportSettings = LifecycleCoordinator.defaultSettings,
+         previewRenderer: (any FrameRendering)? = nil) {
         self.renderer = renderer; self.exportSettings = settings
-        self.previewPipeline = PreviewPipeline(renderer: renderer, settings: settings.render, previewScale: 1.0)
+        self.previewPipeline = PreviewPipeline(renderer: previewRenderer ?? renderer,
+                                               settings: settings.render, previewScale: 1.0)
     }
 
     /// Longest side, in pixels, the preview render is allowed to produce. The preview is bounded
@@ -85,14 +93,18 @@ final class LifecycleCoordinator: ObservableObject {
                                                           sourceWidth: frame.sourceWidth,
                                                           sourceHeight: frame.sourceHeight)
             // A `nil` result means the pipeline coalesced this request away as stale — a NEWER
-            // frame already won. Assigning `nil` here would blank the screen behind that newer
-            // frame, so the currently displayed snapshot MUST survive untouched.
-            if let snapshot { previewSnapshot = snapshot }
+            // frame already won. BOTH visible writes are therefore gated on acceptance: assigning
+            // `nil` would blank the screen behind that newer frame, and bumping the overlay
+            // timestamp would label the newer frame with THIS frame's older time. A stale render
+            // must leave every piece of visible state alone, not just the image.
+            if let snapshot {
+                previewSnapshot = snapshot
+                previewState.scrub(to: frame.presentationTime)
+            }
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             log.error("preview render failed: \(self.lastError ?? "")")
         }
-        previewState.scrub(to: frame.presentationTime)
     }
 
     /// Default export settings (a 2-color bayer palette at scale 1). Constructed once; throws are

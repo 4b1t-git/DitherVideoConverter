@@ -249,6 +249,75 @@ final class LifecycleTests: XCTestCase {
         XCTAssertNil(coordinator.lastError)
     }
 
+    // A scrub the pipeline coalesced away as stale MUST leave EVERY piece of visible state alone —
+    // not just the image. Publishing the image while still rewinding the overlay timestamp would
+    // label the frame actually on screen with the superseded frame's older time.
+    //
+    // Deterministic by construction: `GatedFrameRenderer` blocks the older frame inside the
+    // renderer's suspension point until the newer one has completed. No sleeps, no tolerances.
+    func testStaleFrameRenderDoesNotRewindTheOverlayTimestamp() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let gate = GatedFrameRenderer()
+        let coordinator = LifecycleCoordinator(previewRenderer: gate)
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let sources = try XCTUnwrap(coordinator.importedSources)
+        XCTAssertGreaterThan(sources.count, 2, "The fixture MUST provide a third frame to supersede with")
+        let olderTime = sources[1].presentationTime, newerTime = sources[2].presentationTime
+        XCTAssertNotEqual(olderTime, newerTime, "The two frames MUST carry distinct presentation times")
+
+        await gate.hold(olderTime)
+        let older = Task { await coordinator.showFrame(at: 1) }
+        await gate.waitForArrival(olderTime)   // frame 1 is now suspended INSIDE the renderer
+        await coordinator.showFrame(at: 2)     // frame 2 takes the newer token and completes
+        XCTAssertEqual(coordinator.previewState.currentTimestamp, newerTime)
+
+        await gate.release(olderTime)          // frame 1 resumes and finds itself superseded
+        await older.value
+        XCTAssertEqual(coordinator.previewState.currentTimestamp, newerTime,
+                       "A stale render MUST NOT rewind the overlay timestamp behind the frame on screen")
+        XCTAssertEqual(coordinator.previewSnapshot?.request.timestamp, newerTime,
+                       "A stale render MUST NOT replace the newer frame on screen")
+        XCTAssertNil(coordinator.lastError, "Coalescing a stale scrub is not an error")
+    }
+
+    /// `FrameRendering` double that delegates to the real renderer but can hold a chosen
+    /// `request.timestamp` at the suspension point until the test releases it. Everything not
+    /// explicitly held passes straight through, so `importAsset`'s own frame-0 render is unaffected.
+    private actor GatedFrameRenderer: FrameRendering {
+        private let inner = MetalFrameRenderer()
+        private var held: Set<Double> = []
+        private var waiters: [Double: CheckedContinuation<Void, Never>] = [:]
+        private var arrivals: [Double: CheckedContinuation<Void, Never>] = [:]
+        private var arrived: Set<Double> = []
+
+        func hold(_ timestamp: Double) { held.insert(timestamp) }
+
+        func release(_ timestamp: Double) {
+            held.remove(timestamp)
+            waiters.removeValue(forKey: timestamp)?.resume()
+        }
+
+        /// Resolves once a render for `timestamp` has entered the renderer, so the test never has
+        /// to guess whether the concurrent call has started.
+        func waitForArrival(_ timestamp: Double) async {
+            if arrived.contains(timestamp) { return }
+            await withCheckedContinuation { arrivals[timestamp] = $0 }
+        }
+
+        func render(request: RenderRequest, settings: RenderSettings,
+                    pixels: [UInt8], sourceWidth: Int, sourceHeight: Int) async throws -> [UInt8] {
+            let timestamp = request.timestamp
+            arrived.insert(timestamp)
+            arrivals.removeValue(forKey: timestamp)?.resume()
+            if held.contains(timestamp) {
+                await withCheckedContinuation { waiters[timestamp] = $0 }
+            }
+            return try await inner.render(request: request, settings: settings, pixels: pixels,
+                                          sourceWidth: sourceWidth, sourceHeight: sourceHeight)
+        }
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }
