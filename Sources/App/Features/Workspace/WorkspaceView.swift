@@ -97,6 +97,10 @@ struct WorkspaceView: View {
     private var status: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let preflight = coordinator.preflightDisclosure { Text(preflight).font(.caption) }
+            // The audio verdict belongs here at IMPORT time, not only after a write completes:
+            // "this export will be silent" is something the user must be able to read before
+            // choosing a destination, while they can still pick a different source.
+            if let audio = coordinator.importedAudioDisclosure { Text(audio).font(.caption) }
             if let completion = coordinator.completionDisclosure { Text(completion).font(.caption) }
             if let progress = coordinator.exportProgress {
                 ProgressView(value: progress.fractionCompleted).progressViewStyle(.linear)
