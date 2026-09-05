@@ -206,6 +206,15 @@ enum PaletteCatalog {
     /// Every usable palette in `bundle`'s catalogue, in the order the file lists them (the order is
     /// the picker's order, so it is preserved rather than sorted), or `[fallback]` when the file
     /// yields none.
+    /// The main bundle's catalogue, decoded ONCE per process.
+    ///
+    /// SwiftUI re-initialises a `View` struct every time its parent re-evaluates `body`, so a
+    /// `let palettes = PaletteCatalog.bundled()` stored on a view is NOT read once — it re-opens
+    /// and re-decodes the resource on every published change, which during a scrub is once per
+    /// frame. Views read this instead. `bundled(in:)` stays available so a test can point at a
+    /// bundle that lacks the resource.
+    static let shared: [NamedPalette] = bundled()
+
     static func bundled(in bundle: Bundle = .main) -> [NamedPalette] {
         guard let url = bundle.url(forResource: "BundledPalettes", withExtension: "json"),
               let data = try? Data(contentsOf: url),

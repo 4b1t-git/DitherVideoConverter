@@ -41,10 +41,11 @@ struct WorkspaceView: View {
     /// Slider position, in frames. `Double` because `Slider` is `BinaryFloatingPoint`-bound; it is
     /// stepped by 1 and only ever read back through `Int(...)`.
     @State private var frameIndex: Double = 0
-    /// The palette catalogue, read ONCE at construction. `PaletteCatalog.bundled()` opens and
-    /// decodes a file, and `body` re-evaluates on every published coordinator change — reading it
-    /// there would re-decode the resource on every scrub tick and every export progress update.
-    private let palettes: [NamedPalette] = PaletteCatalog.bundled()
+    /// The palette catalogue. Read from `PaletteCatalog.shared`, which decodes the resource once
+    /// per process: a stored-property initialiser here would run on every `init`, and SwiftUI
+    /// re-initialises this struct every time the App's `body` re-evaluates — i.e. on every
+    /// published coordinator change, which during a scrub is once per frame.
+    private var palettes: [NamedPalette] { PaletteCatalog.shared }
 
     var body: some View {
         VStack(spacing: 0) {
