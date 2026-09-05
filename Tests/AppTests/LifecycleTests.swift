@@ -635,6 +635,127 @@ final class LifecycleTests: XCTestCase {
                              "A gradient source under .blackOnWhite MUST NOT export as a near-uniform frame (min=\(minimum) max=\(maximum))")
     }
 
+    // The spec requires preview, still, and export to share one set of settings, so the settings
+    // live on the coordinator — and a change to them MUST repaint what is already on screen.
+    // Storing the new value without repainting would leave the user looking at the previous style
+    // while the export used the new one, which is the exact divergence the shared-settings
+    // requirement exists to prevent.
+    func testUpdatingRenderSettingsRepaintsTheFrameAlreadyOnScreen() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let before = try XCTUnwrap(coordinator.previewSnapshot, "A supported import MUST put a frame on screen")
+        // The fixture's first frame is flat grey 32. The default `.bayer` renders that as a MIXED
+        // ordered-dither pattern (the 4×4 matrix puts two of every sixteen thresholds below 32),
+        // while `.threshold` puts every one of those pixels under 128 and renders solid 0. The two
+        // therefore cannot coincide by accident, which is what makes the pixel comparison below a
+        // real check rather than a lucky one.
+        XCTAssertTrue(before.pixels.contains(255), "Precondition: the default bayer render MUST be a mixed pattern")
+        let changed = try RenderSettings(style: .dither(.threshold), palette: try Palette(colors: bw),
+                                         background: .postToneMapSDR)
+        await coordinator.updateRenderSettings(changed)
+        XCTAssertEqual(coordinator.renderSettings, changed, "The coordinator MUST hold the new settings")
+        let after = try XCTUnwrap(coordinator.previewSnapshot, "The frame on screen MUST survive a settings change")
+        XCTAssertNotEqual(after.pixels, before.pixels,
+                          "A settings change MUST re-render the frame on screen, not only store the new value")
+        XCTAssertEqual(Set(after.pixels), [0],
+                       "The repaint MUST be the NEW style's output (threshold puts grey 32 below 128 everywhere)")
+    }
+
+    // A settings change before any import is legitimate — the user may pick a style first — so it
+    // MUST update the settings without inventing a frame or reporting a failure the user cannot act
+    // on. This is the same no-op contract `showFrame(at:)` already keeps for an absent import.
+    func testUpdatingRenderSettingsWithNothingImportedLeavesTheScreenEmptyWithoutError() async throws {
+        let coordinator = LifecycleCoordinator()
+        let changed = try RenderSettings(style: .ascii(.text), palette: try Palette(colors: bw), cellSize: 4)
+        await coordinator.updateRenderSettings(changed)
+        XCTAssertEqual(coordinator.renderSettings, changed, "The settings MUST change with or without an import")
+        XCTAssertNil(coordinator.previewSnapshot, "There is nothing to render, so nothing MUST appear on screen")
+        XCTAssertNil(coordinator.lastError, "An empty re-render is a no-op, NOT a user-visible failure")
+    }
+
+    // `ExportSettings.init` rejects anything outside (0, 1], and `exportSettings` is read on every
+    // export, so the stored scale MUST already be inside that range: clamping at the setter is what
+    // keeps the computed settings total instead of leaving a throw on the export path.
+    func testUpdateExportScaleClampsOutOfRangeInputIntoTheValidRange() {
+        let coordinator = LifecycleCoordinator()
+        coordinator.updateExportScale(0.5)
+        XCTAssertEqual(coordinator.exportScale, 0.5, "A valid scale MUST be stored unchanged")
+        for rejected in [0.0, -0.25, 2.0] {
+            coordinator.updateExportScale(rejected)
+            XCTAssertGreaterThan(coordinator.exportScale, 0, "Scale \(rejected) MUST clamp above 0")
+            XCTAssertLessThanOrEqual(coordinator.exportScale, 1, "Scale \(rejected) MUST clamp to at most 1")
+            XCTAssertEqual(coordinator.exportScale, 1.0,
+                           "An unusable scale MUST fall back to full resolution rather than silently shrink the output")
+        }
+    }
+
+    // `exportSettings` is derived, not stored, so it MUST follow BOTH of its inputs. A derivation
+    // that tracked only one of them would export the newly chosen style at a stale scale (or the
+    // reverse) with nothing on screen to reveal it.
+    func testExportSettingsReflectBothTheRenderSettingsAndTheExportScale() async throws {
+        let coordinator = LifecycleCoordinator()
+        let changed = try RenderSettings(style: .ascii(.numeric), palette: try Palette(colors: bw),
+                                         background: .blackOnWhite, cellSize: 8)
+        await coordinator.updateRenderSettings(changed)
+        coordinator.updateExportScale(0.25)
+        XCTAssertEqual(coordinator.exportSettings.render, changed, "Export settings MUST carry the current render settings")
+        XCTAssertEqual(coordinator.exportSettings.scale, 0.25, "Export settings MUST carry the current export scale")
+    }
+
+    // The consequence the user actually gets: after choosing a different style, the NEXT written
+    // file MUST contain it. The preview and the settings object agreeing is not enough — the export
+    // reads `exportSettings` at write time, and that read is what this proves.
+    func testExportAfterUpdatingRenderSettingsWritesTheNewStyle() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let first = exportURL(), second = exportURL()
+        defer { [first, second].forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        await coordinator.exportToFile(url: first)
+        XCTAssertEqual(coordinator.phase, .exported, "The first export MUST succeed")
+        let changed = try RenderSettings(style: .dither(.threshold), palette: try Palette(colors: bw),
+                                         background: .postToneMapSDR)
+        await coordinator.updateRenderSettings(changed)
+        await coordinator.exportToFile(url: second)
+        XCTAssertEqual(coordinator.phase, .exported, "The second export MUST succeed")
+
+        let bayerLuma = try firstFrameLuma(first), thresholdLuma = try firstFrameLuma(second)
+        XCTAssertFalse(bayerLuma.isEmpty, "The first export MUST contain a readable frame")
+        XCTAssertEqual(bayerLuma.count, thresholdLuma.count, "Both exports MUST share geometry; only the style differs")
+        XCTAssertNotEqual(bayerLuma, thresholdLuma,
+                          "The export MUST read the CURRENT render settings, so the written pixels MUST change with them")
+    }
+
+    /// Decodes the first written video frame's luma plane.
+    ///
+    /// `testExportAfterUpdatingRenderSettingsWritesTheNewStyle` compares THESE bytes rather than the
+    /// two `.mov` files' bytes because a QuickTime container carries metadata (the `mvhd` creation
+    /// time among it) that differs between two writes of identical pixels: a file-level comparison
+    /// would report "different" whether or not the new settings ever reached the encoder, which is
+    /// the one thing that test exists to prove. Returns `[]` rather than throwing on an unreadable
+    /// file so the caller asserts on emptiness with its own message.
+    private func firstFrameLuma(_ url: URL) throws -> [UInt8] {
+        let asset = AVURLAsset(url: url)
+        let reader = try AVAssetReader(asset: asset)
+        guard let track = asset.tracks(withMediaType: .video).first else { return [] }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        ])
+        reader.add(output)
+        guard reader.startReading(), let sample = output.copyNextSampleBuffer(),
+              let buffer = CMSampleBufferGetImageBuffer(sample) else { return [] }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)?.assumingMemoryBound(to: UInt8.self) else { return [] }
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let width = CVPixelBufferGetWidthOfPlane(buffer, 0), height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        return (0..<height).flatMap { y in (0..<width).map { x in base[y * bytesPerRow + x] } }
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }

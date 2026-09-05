@@ -55,7 +55,32 @@ final class LifecycleCoordinator: ObservableObject {
     @Published private(set) var previewSnapshot: PreviewSnapshot?
     let previewState = PreviewState()
     private let renderer: MetalFrameRenderer
-    private let exportSettings: ExportSettings
+    /// The settings preview, still, and export all render through. They live HERE, not in view
+    /// state, because the spec requires the three to share them: a copy owned by a settings panel
+    /// would let the picture on screen and the file on disk disagree, and nothing in the UI would
+    /// show which of the two was right. `private(set)` so the only way to change them is
+    /// `updateRenderSettings`, which also repaints.
+    @Published private(set) var renderSettings: RenderSettings
+    /// Export-only resolution scale, kept inside `(0, 1]` by `updateExportScale` — see
+    /// `exportSettings` for why the clamp lives at the setter.
+    @Published private(set) var exportScale: Double
+    /// The frame `showFrame(at:)` was last asked to put on screen. A settings change re-renders
+    /// THIS index, so the user sees the new style applied to the frame they were already looking
+    /// at rather than being thrown back to the start of the clip.
+    private(set) var currentFrameIndex: Int = 0
+    /// What `export(...)` writes with, derived from the two published values above rather than
+    /// stored, so a settings change cannot leave a stale copy behind for the next write to use.
+    ///
+    /// `ExportSettings.init` throws for a scale outside `(0, 1]`, and this property is read on the
+    /// export path where there is no caller left to hand an error to. It is kept TOTAL by clamping
+    /// at the two (and only two) places `exportScale` is written — `init` receives an already
+    /// validated `ExportSettings`, and `updateExportScale` clamps — so the invariant is structural
+    /// and `try!` states it. The alternative, swallowing the throw with a fallback, would silently
+    /// export at a scale the user did not choose; a broken invariant here is a programming error
+    /// that should be loud, not a condition to paper over.
+    var exportSettings: ExportSettings {
+        try! ExportSettings(render: renderSettings, scale: exportScale)
+    }
     /// Preview and export share the SOLE `MetalFrameRenderer` and the SAME `RenderSettings`; the
     /// preview differs only by `RenderRequest.scale` (R3-003). Constructing a second renderer here
     /// would break intent-invariance between what the user sees and what gets written.
@@ -75,7 +100,11 @@ final class LifecycleCoordinator: ObservableObject {
     init(renderer: MetalFrameRenderer = MetalFrameRenderer(),
          settings: ExportSettings = LifecycleCoordinator.defaultSettings,
          previewRenderer: (any FrameRendering)? = nil) {
-        self.renderer = renderer; self.exportSettings = settings
+        self.renderer = renderer
+        self.renderSettings = settings.render
+        // Already inside `(0, 1]` — `ExportSettings.init` refuses anything else — but clamped
+        // anyway so that EVERY write to `exportScale` goes through the same guard.
+        self.exportScale = LifecycleCoordinator.clampedExportScale(settings.scale)
         self.previewPipeline = PreviewPipeline(renderer: previewRenderer ?? renderer,
                                                settings: settings.render, previewScale: 1.0)
     }
@@ -103,6 +132,7 @@ final class LifecycleCoordinator: ObservableObject {
     func showFrame(at index: Int) async {
         guard let sources = importedSources, sources.indices.contains(index) else { return }
         let frame = sources[index]
+        currentFrameIndex = index
         scrubToken &+= 1
         let token = scrubToken
         await previewPipeline.update(previewScale: LifecycleCoordinator.previewScale(
@@ -195,7 +225,7 @@ final class LifecycleCoordinator: ObservableObject {
         // `importedAudio`/`importedAudioDisclosure` reset with the frames and for the same
         // reason: an unsupported or audio-less re-import MUST NOT carry the previous clip's
         // sound into the next export.
-        importedSources = nil; importedFrameCount = 0; previewSnapshot = nil
+        importedSources = nil; importedFrameCount = 0; previewSnapshot = nil; currentFrameIndex = 0
         importedAudio = nil; importedAudioDisclosure = nil; importedAsset = nil
         phase = .importing; previewState.setImporting()
         let s = signposter.beginInterval("import")
@@ -303,6 +333,46 @@ final class LifecycleCoordinator: ObservableObject {
     }
 
     func cancelExport() async { await exportSession?.cancel() }
+
+    /// Adopts new render settings everywhere at once: the coordinator's own copy (which
+    /// `exportSettings` derives from), the preview pipeline's copy, and the frame on screen.
+    ///
+    /// The repaint deliberately goes through the EXISTING `showFrame(at:)` rather than calling the
+    /// pipeline directly. `showFrame` is what takes a fresh scrub token, and the token is the whole
+    /// coalescing contract: a settings change that raced a scrub would, with a second render path,
+    /// resolve against a token the pipeline never saw and could overwrite a newer frame with an
+    /// older one. One path in means the race is decided by the same rule as every other one.
+    ///
+    /// Re-rendering an index that no longer exists (nothing imported, or an emptied import) is a
+    /// no-op inside `showFrame`, so a settings change before any import updates the settings and
+    /// leaves the screen alone rather than reporting a failure the user cannot act on.
+    func updateRenderSettings(_ settings: RenderSettings) async {
+        renderSettings = settings
+        await previewPipeline.update(settings: settings)
+        await showFrame(at: currentFrameIndex)
+    }
+
+    /// Sets the export-only resolution scale.
+    ///
+    /// This deliberately does NOT repaint. The preview has its own scale, derived from the source's
+    /// size by `previewScale(sourceWidth:sourceHeight:)` so the on-screen cost stays bounded no
+    /// matter how large the clip is; re-rendering here would either ignore the value the user just
+    /// set (pointless work) or apply it on top of the preview's own bound (a preview that no longer
+    /// represents the export). Export resolution is visible in the written file, not on screen.
+    func updateExportScale(_ scale: Double) {
+        exportScale = LifecycleCoordinator.clampedExportScale(scale)
+    }
+
+    /// The single guard that keeps `exportScale` inside `ExportSettings`' `(0, 1]` range.
+    ///
+    /// Anything unusable — zero, negative, NaN, infinite, or above 1 — becomes `1.0`, full
+    /// resolution. That is the only safe direction: the other candidates (a small positive floor,
+    /// or keeping the previous value) would silently shrink the user's output or silently ignore
+    /// the control they just moved, and both failures are invisible until the file is opened.
+    private static func clampedExportScale(_ scale: Double) -> Double {
+        guard scale.isFinite, scale > 0, scale <= 1 else { return 1.0 }
+        return scale
+    }
 
     /// Maps the actually-wired `AudioPolicyDecision.mode` onto the `ExportAudioMode` value
     /// `ExportSession.export` (and its `ExportResult.audioMode`) actually reports — the export

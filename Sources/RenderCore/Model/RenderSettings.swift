@@ -143,3 +143,85 @@ extension RenderSettings {
         }
     }
 }
+
+/// One entry of a palette picker: a `Palette` plus the name the catalogue gives it.
+///
+/// The name is NOT on `Palette` itself because a palette is a rendering input — it has to stay
+/// comparable by colour alone, so two identically-coloured palettes loaded from different sources
+/// still satisfy `RenderSettings`' equality. The name belongs to the catalogue that offers it.
+struct NamedPalette: Sendable, Equatable {
+    let name: String
+    let palette: Palette
+}
+
+/// The palettes the app ships (`Resources/Palettes/BundledPalettes.json`), decoded into the model.
+///
+/// The file is the catalogue the user picks from, so this loader's only real requirement is that
+/// it ALWAYS produces something to pick. Two consequences follow:
+///
+/// 1. A single unusable entry (a colour triple that is not a triple, or a colour count outside
+///    `Palette`'s 2–16 range) is SKIPPED, not propagated. Failing the whole load over one bad
+///    entry would cost the user every other palette in the file to punish a mistake in one of
+///    them, and the mistake is in a resource they cannot edit.
+/// 2. A missing, unreadable, or entirely unusable file degrades to `fallback` — never to `[]`. A
+///    picker bound to an empty list offers nothing and cannot be recovered from inside the app,
+///    which is a strictly worse failure than a picker that is missing one palette.
+///
+/// Skipped entries are dropped SILENTLY rather than logged. This type is in `RenderCore`, which
+/// has no logging surface of its own, and the file it reads ships inside the app bundle: a user
+/// can neither cause nor fix a malformed entry, so a log line would only ever be read by whoever
+/// broke the resource — and `testBundledCatalogLoadsEveryShippedPaletteInFileOrder` already fails
+/// loudly, at build time, for exactly that person.
+enum PaletteCatalog {
+    /// The catalogue's on-disk shape. `constraint` in the JSON is prose for a human reader and is
+    /// deliberately not decoded: the 2–16 rule it states is enforced by `Palette.init`, and a
+    /// second copy of it here could only drift from the one that actually runs.
+    private struct Document: Decodable {
+        struct Entry: Decodable {
+            let name: String
+            let colors: [[Int]]
+        }
+        let limitedPalettes: [Entry]
+    }
+
+    /// The palette a picker falls back to when the bundled catalogue yields nothing usable. Black
+    /// and white, because it is the one pair every style renders meaningfully. The `try!` is safe
+    /// by inspection: two colours is inside `Palette`'s 2–16 range.
+    static let fallback: NamedPalette = {
+        let palette = try! Palette(colors: [SRGBColor(r: 0, g: 0, b: 0), SRGBColor(r: 255, g: 255, b: 255)])
+        return NamedPalette(name: "Black on White", palette: palette)
+    }()
+
+    /// Every usable palette in `bundle`'s catalogue, in the order the file lists them (the order is
+    /// the picker's order, so it is preserved rather than sorted), or `[fallback]` when the file
+    /// yields none.
+    static func bundled(in bundle: Bundle = .main) -> [NamedPalette] {
+        guard let url = bundle.url(forResource: "BundledPalettes", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let document = try? JSONDecoder().decode(Document.self, from: data) else {
+            return [fallback]
+        }
+        let decoded = document.limitedPalettes.compactMap(namedPalette(from:))
+        return decoded.isEmpty ? [fallback] : decoded
+    }
+
+    /// `nil` for an entry this loader cannot honour — a colour that is not an RGB triple, or a
+    /// colour count `Palette` rejects. Both are skips, per the type's contract above.
+    private static func namedPalette(from entry: Document.Entry) -> NamedPalette? {
+        var colors: [SRGBColor] = []
+        colors.reserveCapacity(entry.colors.count)
+        for triple in entry.colors {
+            guard triple.count == 3 else { return nil }
+            colors.append(SRGBColor(r: component(triple[0]), g: component(triple[1]), b: component(triple[2])))
+        }
+        guard let palette = try? Palette(colors: colors) else { return nil }
+        return NamedPalette(name: entry.name, palette: palette)
+    }
+
+    /// Clamps a JSON colour component into `0...255`. `UInt8(exactly:)` on an out-of-range value
+    /// would trap, which would turn one typo in a shipped resource into a launch crash; clamping
+    /// costs the entry its exact colour and nothing else.
+    private static func component(_ value: Int) -> UInt8 {
+        UInt8(min(255, max(0, value)))
+    }
+}
