@@ -730,6 +730,64 @@ final class LifecycleTests: XCTestCase {
                           "The export MUST read the CURRENT render settings, so the written pixels MUST change with them")
     }
 
+    // ASCII is implemented, tested, and — until the settings panel existed — unreachable from the
+    // app. This drives the panel's OWN assembly function end to end and proves the picture on
+    // screen actually becomes an ASCII render: every dither mode emits only {0, 255} under
+    // `.postToneMapSDR`, while ASCII emits the mid-tone ink of the glyph its inverse density
+    // selected, so a mid-tone pixel cannot be produced by the style this replaced.
+    func testAssembledASCIISettingsReachTheScreenAsAnASCIIRender() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let bayer = try XCTUnwrap(coordinator.previewSnapshot, "A supported import MUST put a frame on screen")
+        XCTAssertEqual(Set(bayer.pixels).subtracting([0, 255]), [],
+                       "Precondition: the default bayer render is pure black and white")
+
+        await coordinator.updateRenderSettings(.make(style: .ascii(.text), palette: try Palette(colors: bw),
+                                                     background: .postToneMapSDR, cellSize: 4, toneMap: false))
+        XCTAssertEqual(coordinator.renderSettings.style, .ascii(.text),
+                       "The assembled settings MUST reach the coordinator as the ASCII style that was chosen")
+        XCTAssertEqual(coordinator.renderSettings.cellSize, 4, "The chosen cell size MUST survive assembly")
+        let ascii = try XCTUnwrap(coordinator.previewSnapshot, "The frame on screen MUST survive a settings change")
+        XCTAssertNotEqual(ascii.pixels, bayer.pixels,
+                          "Choosing ASCII MUST change the picture, not only the stored settings")
+        XCTAssertTrue(ascii.pixels.allSatisfy { $0 != 0 && $0 != 255 },
+                      "An ASCII render MUST paint glyph ink, which no dither mode can produce")
+    }
+
+    // The panel writes back through `RenderSettings.make`, and the export reads `exportSettings` at
+    // write time — so what the assembly function produced MUST be what the next write uses. A
+    // panel-owned copy of the settings would satisfy the picker and leave this derivation stale.
+    func testExportSettingsCarryTheAssembledRenderSettings() async throws {
+        let coordinator = LifecycleCoordinator()
+        let assembled = RenderSettings.make(style: .ascii(.numeric), palette: try Palette(colors: bw),
+                                            background: .whiteOnBlack, cellSize: 6, toneMap: true)
+        await coordinator.updateRenderSettings(assembled)
+        XCTAssertEqual(coordinator.renderSettings, assembled, "The coordinator MUST hold the assembled settings")
+        XCTAssertEqual(coordinator.exportSettings.render, assembled,
+                       "An export started right after a settings change MUST write with the NEW configuration")
+    }
+
+    // The window handed `PreviewView` a hardcoded copy of `LifecycleCoordinator.defaultSettings`,
+    // so the snapshot was painted with the DEFAULT palette and background no matter what the
+    // settings actually were: every control in the panel would have been a no-op on screen.
+    //
+    // This asserts on the single named value `body` passes down. It cannot prove `body` reads it —
+    // that needs a UI-automation layer this project does not have — but it does pin the value the
+    // preview is painted with to the coordinator, which is where the defect lived.
+    func testWorkspacePreviewSettingsFollowTheCoordinatorNotTheDefaults() async throws {
+        let coordinator = LifecycleCoordinator()
+        let view = WorkspaceView(coordinator: coordinator, previewState: coordinator.previewState)
+        let chosen = RenderSettings.make(style: .ascii(.text), palette: try Palette(colors: bw),
+                                         background: .blackOnWhite, cellSize: 3, toneMap: false)
+        await coordinator.updateRenderSettings(chosen)
+        XCTAssertEqual(view.previewSettings, chosen,
+                       "The preview MUST be painted with the CURRENT settings, not a copy of the defaults")
+        XCTAssertNotEqual(view.previewSettings, LifecycleCoordinator.defaultSettings.render,
+                          "Precondition: the chosen settings differ from the defaults, so a hardcoded copy fails here")
+    }
+
     /// Decodes the first written video frame's luma plane.
     ///
     /// `testExportAfterUpdatingRenderSettingsWritesTheNewStyle` compares THESE bytes rather than the
