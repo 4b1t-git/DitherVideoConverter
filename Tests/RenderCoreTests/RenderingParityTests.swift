@@ -120,6 +120,55 @@ final class RenderingParityTests: XCTestCase {
         print("M5_ONLY harness=full-resolution-still width=\(width) height=\(height) pixels=\(output.count) elapsed=\(String(format: "%.6f", seconds)) hash=\(hash) model=\(sysctlString("hw.model")) scope=Apple-M5-only-not-M1-or-older")
     }
 
+    // `MetalFrameRenderer.render` emits stylized BRIGHTNESS under `.postToneMapSDR`, so the byte is
+    // already the grey level to paint. Anything else here would re-interpret a value the renderer
+    // already resolved.
+    func testDisplayColorUnderPostToneMapSDRIsTheByteAsGrey() throws {
+        let settings = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: blackWhite),
+                                          background: .postToneMapSDR)
+        for byte in [UInt8(0), 1, 17, 128, 254, 255] {
+            XCTAssertEqual(settings.displayColor(byte), SRGBColor(r: byte, g: byte, b: byte),
+                           "Under .postToneMapSDR the byte IS brightness and MUST paint as that grey")
+        }
+    }
+
+    // Under every background EXCEPT `.postToneMapSDR` the renderer's byte is a palette INDEX
+    // (0…N-1). Painting it as grey is what made the black/white backgrounds render index 0 and 1 as
+    // two indistinguishable shades of black; the index MUST resolve through the palette instead.
+    func testDisplayColorUnderBlackOnWhiteResolvesPaletteIndices() throws {
+        let settings = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: blackWhite),
+                                          background: .blackOnWhite)
+        XCTAssertEqual(settings.displayColor(0), SRGBColor(r: 0, g: 0, b: 0),
+                       "Index 0 MUST resolve to the palette's first colour, not to grey 0")
+        XCTAssertEqual(settings.displayColor(1), SRGBColor(r: 255, g: 255, b: 255),
+                       "Index 1 MUST resolve to the palette's second colour, not to grey 1")
+    }
+
+    // The check that proves colour palettes work AT ALL: a 4-colour sepia set MUST come back as
+    // sepia. A grey reading of the same indices produces {0, 1, 2, 3} — four shades of black.
+    func testDisplayColorResolvesEveryEntryOfAFourColourPalette() throws {
+        let sepia = [SRGBColor(r: 0, g: 0, b: 0), SRGBColor(r: 80, g: 40, b: 20),
+                     SRGBColor(r: 180, g: 130, b: 80), SRGBColor(r: 250, g: 240, b: 210)]
+        for background in [RenderBackground.blackOnWhite, .whiteOnBlack] {
+            let settings = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: sepia),
+                                              background: background)
+            for (index, expected) in sepia.enumerated() {
+                XCTAssertEqual(settings.displayColor(UInt8(index)), expected,
+                               "Index \(index) under \(background) MUST paint as the palette's own sRGB colour")
+            }
+        }
+    }
+
+    // Unreachable through `Palette.nearest`, which only ever returns an in-range index. The mapping
+    // still MUST NOT trap: it runs once per pixel, so an out-of-range byte from a future renderer
+    // change has to degrade to the grey reading rather than take the whole app down.
+    func testDisplayColorFallsBackToGreyForAnOutOfRangePaletteIndex() throws {
+        let settings = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: blackWhite),
+                                          background: .blackOnWhite)
+        XCTAssertEqual(settings.displayColor(200), SRGBColor(r: 200, g: 200, b: 200),
+                       "A byte past the palette's last index MUST fall back to grey instead of trapping")
+    }
+
     private func sysctlString(_ key: String) -> String {
         var size = 0; sysctlbyname(key, nil, &size, nil, 0)
         var value = [CChar](repeating: 0, count: size); sysctlbyname(key, &value, &size, nil, 0)

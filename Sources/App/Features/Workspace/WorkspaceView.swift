@@ -44,7 +44,8 @@ struct WorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PreviewView(state: previewState, snapshot: coordinator.previewSnapshot)
+            PreviewView(state: previewState, snapshot: coordinator.previewSnapshot,
+                        settings: LifecycleCoordinator.defaultSettings.render)
             frameNavigator
             controls
             status

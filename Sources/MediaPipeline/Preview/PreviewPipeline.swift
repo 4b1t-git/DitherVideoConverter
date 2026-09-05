@@ -9,7 +9,13 @@ struct PreviewSnapshot: Sendable, Equatable {
     let pixels: [UInt8]
 }
 
-/// Bridges a snapshot's stylized luma bytes into a single 8-bit grayscale `CGImage`.
+/// Bridges a snapshot's stylized bytes into a single 32-bit RGB `CGImage`, painted through
+/// `RenderSettings.displayColor` — the SAME mapping `ExportSession` writes with, so what the user
+/// inspects on screen is what the encoder receives.
+///
+/// The settings are a parameter rather than something the snapshot carries: a renderer byte is
+/// brightness under `.postToneMapSDR` and a palette INDEX otherwise, and reading an index as grey
+/// is what made every palette background paint as near-black (issue #38).
 ///
 /// The preview surface used to fill one rounded rect per pixel inside a SwiftUI `Canvas`, which
 /// costs O(W×H) draw calls per repaint: tolerable for a 16×8 fixture, unusable for a real clip.
@@ -21,20 +27,27 @@ struct PreviewSnapshot: Sendable, Equatable {
 /// (returns `nil`) on a non-positive size or a buffer shorter than `width * height`, because
 /// handing CoreGraphics a short buffer would let it read past the end of the array.
 extension PreviewSnapshot {
-    func makeGrayscaleImage() -> CGImage? {
+    func makeImage(settings: RenderSettings) -> CGImage? {
         let width = request.width, height = request.height
         guard width > 0, height > 0 else { return nil }
         let required = width * height
         guard pixels.count >= required else { return nil }
-        // `Data(pixels.prefix(required))` COPIES the bytes into storage the provider owns. The
-        // array must never be reached through an escaping unsafe pointer: `CGDataProvider` outlives
-        // this call, and a pointer into `pixels` would dangle the moment the array is released.
-        let copy = Data(pixels.prefix(required))
-        guard let provider = CGDataProvider(data: copy as CFData) else { return nil }
+        // One resolution per possible byte, not per pixel — the same cache-the-one-mapping choice
+        // `ExportSession.makePixelBuffer` makes, for the same reason.
+        let colors = (0...255).map { settings.displayColor(UInt8($0)) }
+        var rgba = [UInt8](); rgba.reserveCapacity(required * 4)
+        for index in 0..<required {
+            let color = colors[Int(pixels[index])]
+            rgba.append(color.r); rgba.append(color.g); rgba.append(color.b); rgba.append(255)
+        }
+        // `Data(rgba)` COPIES the bytes into storage the provider owns. The array must never be
+        // reached through an escaping unsafe pointer: `CGDataProvider` outlives this call, and a
+        // pointer into a local array would dangle the moment the array is released.
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
         return CGImage(width: width, height: height,
-                       bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
-                       space: CGColorSpaceCreateDeviceGray(),
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                       bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: false,
                        intent: .defaultIntent)
     }

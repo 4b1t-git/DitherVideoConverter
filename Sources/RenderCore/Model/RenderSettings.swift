@@ -110,3 +110,36 @@ struct RenderRequest: Sendable, Equatable {
     let intent: RenderIntent
     let scale: Double
 }
+
+/// The single interpretation of ONE renderer output byte as a paintable sRGB color.
+///
+/// It lives on `RenderSettings`, not on the preview or on the export, because the byte means
+/// nothing without the settings that produced it: `MetalFrameRenderer.render` emits stylized
+/// BRIGHTNESS under `.postToneMapSDR` and a palette INDEX (0…N-1) under every other background.
+/// Mapping an index back to a color is the painter's job, and there are two painters —
+/// `PreviewSnapshot.makeImage` on screen and `ExportSession.makePixelBuffer` on the way to the
+/// encoder. The spec's full-resolution parity requirement ("pre-encode pixels MUST match exactly")
+/// makes two independent implementations a latent bug: they would agree the day they were written
+/// and drift the first time only one of them was corrected, and the drift would only be visible to
+/// someone comparing a still against a frame of the exported movie. So there is exactly one.
+extension RenderSettings {
+    func displayColor(_ byte: UInt8) -> SRGBColor {
+        switch background {
+        case .postToneMapSDR:
+            // The byte already IS the brightness the style resolved; re-quantizing it here would
+            // silently disagree with what the renderer decided.
+            return SRGBColor(r: byte, g: byte, b: byte)
+        case .blackOnWhite, .whiteOnBlack:
+            let index = Int(byte)
+            // Unreachable given the renderer's contract: `Palette.nearest` only ever returns an
+            // index drawn from `colors.indices`. The guard exists so that a renderer change which
+            // starts emitting something else DEGRADES to the grey reading instead of trapping —
+            // this runs once per pixel, so an out-of-bounds subscript here would take the whole app
+            // down mid-frame rather than show one wrong picture.
+            guard palette.colors.indices.contains(index) else {
+                return SRGBColor(r: byte, g: byte, b: byte)
+            }
+            return palette.colors[index]
+        }
+    }
+}

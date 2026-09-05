@@ -318,6 +318,69 @@ final class ExportSessionTests: XCTestCase {
         XCTAssertEqual(videoTracks.count, 1)
     }
 
+    // The written buffer is `kCVPixelFormatType_32BGRA`: byte 0 is BLUE and byte 2 is RED. While
+    // every channel carried the same value that order was invisible, so a red/blue swap could ship
+    // unnoticed. This proves the order by exporting a frame whose two halves resolve to palette
+    // colours that are opposites in R vs B, and by checking each half in its OWN expected direction
+    // — a global swap inverts both and cannot pass.
+    //
+    // The left half of the source is black and the right half white; Bayer leaves those at 0 and
+    // 255, and `.blackOnWhite` resolves them to palette index 0 (dark blue) and index 1 (orange).
+    //
+    // Tolerance: the comparison is a MEAN over a 16×8 interior region of each half, and it only
+    // requires the expected channel to lead the other by 60. H.264 with 4:2:0 chroma is lossy, but
+    // it distorts a large flat saturated region by well under that, while the swap this test exists
+    // to catch reverses a lead of 160 (blue half) and 210 (orange half). Sampling the interior, far
+    // from the black/white boundary, keeps chroma-subsampling bleed out of the measurement.
+    func testExportedPixelsUsePaletteColoursInBGRAChannelOrder() async throws {
+        let width = 64, height = 16
+        let blue = SRGBColor(r: 20, g: 10, b: 180), orange = SRGBColor(r: 250, g: 200, b: 40)
+        let palette = try Palette(colors: [blue, orange])
+        let render = try RenderSettings(style: .dither(.bayer), palette: palette, background: .blackOnWhite)
+        let source = (0..<(width * height)).map { UInt8($0 % width < width / 2 ? 0 : 255) }
+        let url = newMovURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ExportSession(renderer: MetalFrameRenderer(), settings: try ExportSettings(render: render, scale: 1))
+        _ = try await session.export(sources: [ExportSource(pixels: source, sourceWidth: width, sourceHeight: height,
+                                                            presentationTime: 0)],
+                                     audio: .none, audioSource: nil, outputURL: url)
+
+        let written = AVURLAsset(url: url)
+        let videoTracks = try await written.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videoTracks.first)
+        let reader = try AVAssetReader(asset: written)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        let sample = try XCTUnwrap(output.copyNextSampleBuffer(), "The export MUST contain a readable frame")
+        let buffer = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer)).assumingMemoryBound(to: UInt8.self)
+        let bpr = CVPixelBufferGetBytesPerRow(buffer)
+        func mean(xRange: Range<Int>) -> (r: Double, g: Double, b: Double) {
+            var r = 0.0, g = 0.0, b = 0.0, n = 0.0
+            for y in 4..<12 {
+                for x in xRange {
+                    b += Double(base[y * bpr + x * 4 + 0])
+                    g += Double(base[y * bpr + x * 4 + 1])
+                    r += Double(base[y * bpr + x * 4 + 2])
+                    n += 1
+                }
+            }
+            return (r / n, g / n, b / n)
+        }
+        let left = mean(xRange: 8..<24), right = mean(xRange: 40..<56)
+        XCTAssertGreaterThan(left.b - left.r, 60,
+                             "The black half resolves to the blue palette entry, so B MUST lead R (got \(left))")
+        XCTAssertGreaterThan(right.r - right.b, 60,
+                             "The white half resolves to the orange palette entry, so R MUST lead B (got \(right))")
+        XCTAssertGreaterThan(right.g, right.b,
+                             "Orange's green channel MUST also survive in its own byte (got \(right))")
+    }
+
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw))
     }

@@ -180,7 +180,9 @@ actor ExportSession {
             let request = RenderRequest(timestamp: src.presentationTime, width: orientedWidth, height: orientedHeight, intent: .export, scale: exportSettings.scale)
             let stylized = try await renderer.render(request: request, settings: exportSettings.render,
                                                      pixels: src.pixels, sourceWidth: src.sourceWidth, sourceHeight: src.sourceHeight)
-            guard let pixel = makePixelBuffer(brightnessBytes: stylized, width: orientedWidth, height: orientedHeight, pool: adaptor.pixelBufferPool) else {
+            guard let pixel = makePixelBuffer(rendered: stylized, settings: exportSettings.render,
+                                              width: orientedWidth, height: orientedHeight,
+                                              pool: adaptor.pixelBufferPool) else {
                 progress = ExportProgress(stage: .failed, fractionCompleted: progress.fractionCompleted)
                 try? FileManager.default.removeItem(at: outputURL); throw ExportError.writerRejected("pixel buffer allocation failed at frame \(index)")
             }
@@ -235,8 +237,15 @@ actor ExportSession {
         return ExportResult(frameCount: written, audioMode: audio, outputURL: outputURL, completionFraction: 1.0)
     }
 
-    /// Copy pre-encode stylized `UInt8` brightness bytes into a 32BGRA buffer WITHOUT resampling (pre-encode parity).
-    private nonisolated func makePixelBuffer(brightnessBytes: [UInt8], width: Int, height: Int, pool: CVPixelBufferPool?) -> CVPixelBuffer? {
+    /// Copy pre-encode stylized `UInt8` bytes into a 32BGRA buffer WITHOUT resampling (pre-encode
+    /// parity), painting each byte through `settings.displayColor`.
+    ///
+    /// The parameter is `rendered`, not `brightnessBytes`: only `.postToneMapSDR` returns
+    /// brightness. Under every other background the byte is a palette INDEX, and writing an index
+    /// into all three channels is exactly what made a black/white background export as two shades
+    /// of black and made a colour palette impossible to see (issue #38).
+    private nonisolated func makePixelBuffer(rendered: [UInt8], settings: RenderSettings,
+                                             width: Int, height: Int, pool: CVPixelBufferPool?) -> CVPixelBuffer? {
         var pixel: CVPixelBuffer?
         if let pool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixel) }
         else { CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, [:] as CFDictionary, &pixel) }
@@ -246,12 +255,20 @@ actor ExportSession {
         guard let base = CVPixelBufferGetBaseAddress(pixel) else { return nil }
         let bpr = CVPixelBufferGetBytesPerRow(pixel)
         let row = base.assumingMemoryBound(to: UInt8.self)
+        // Resolved ONCE per frame into all 256 possible answers rather than per pixel: a 1080p
+        // frame is ~2M pixels, and `displayColor` switches on the background and bounds-checks the
+        // palette on every call. The table is still BUILT by `displayColor`, so the mapping itself
+        // is not duplicated — this is a cache of the one implementation, not a second one.
+        let colors = (0...255).map { settings.displayColor(UInt8($0)) }
         for y in 0..<height {
             for x in 0..<width {
-                let b = brightnessBytes[y * width + x]
-                row[y * bpr + x * 4 + 0] = b
-                row[y * bpr + x * 4 + 1] = b
-                row[y * bpr + x * 4 + 2] = b
+                let color = colors[Int(rendered[y * width + x])]
+                // 32BGRA: byte 0 is BLUE and byte 2 is RED. While all three channels carried the
+                // same value this order was unobservable; writing the color in RGB order now would
+                // silently swap red and blue in every exported frame.
+                row[y * bpr + x * 4 + 0] = color.b
+                row[y * bpr + x * 4 + 1] = color.g
+                row[y * bpr + x * 4 + 2] = color.r
                 row[y * bpr + x * 4 + 3] = 255
             }
         }
