@@ -239,6 +239,75 @@ final class RenderingParityTests: XCTestCase {
         return glyphs
     }
 
+    // A picker cannot enumerate `RenderSettings.Style` — it carries associated values and is not
+    // `CaseIterable` — so the settings panel offers `RenderStyleOption` instead. The list it offers
+    // MUST be the complete set of styles the renderer implements: a missing case is a style the
+    // spec requires the app to offer and the user can never reach.
+    func testRenderStyleOptionOffersEveryDitherModeThenEveryGlyphSet() {
+        XCTAssertEqual(RenderStyleOption.allCases.count, DitherMode.allCases.count + ASCIIGlyphSet.allCases.count,
+                       "The picker MUST offer every dither mode and every bundled glyph set, and nothing else")
+        for (index, mode) in DitherMode.allCases.enumerated() {
+            XCTAssertEqual(RenderStyleOption.allCases[index], .dither(mode),
+                           "Dither modes MUST come first, in DitherMode.allCases order")
+            XCTAssertEqual(RenderStyleOption.allCases[index].style, .dither(mode),
+                           "Option .dither(\(mode)) MUST map to the matching renderer style")
+        }
+        for (offset, set) in ASCIIGlyphSet.allCases.enumerated() {
+            let index = DitherMode.allCases.count + offset
+            XCTAssertEqual(RenderStyleOption.allCases[index], .ascii(set),
+                           "Glyph sets MUST follow the dither modes, in ASCIIGlyphSet.allCases order")
+            XCTAssertEqual(RenderStyleOption.allCases[index].style, .ascii(set),
+                           "Option .ascii(\(set.rawValue)) MUST map to the matching renderer style")
+        }
+        XCTAssertEqual(Set(RenderStyleOption.allCases.map(\.description)).count, RenderStyleOption.allCases.count,
+                       "Two options sharing a label would be indistinguishable in the picker")
+    }
+
+    // The panel derives its selection FROM the coordinator's settings and writes it back through
+    // the same type, so the trip out and back MUST be lossless: a lossy round trip would silently
+    // reset the user's style the first time the panel re-read it.
+    func testRenderStyleOptionRoundTripsEveryStyleThroughItsRendererForm() {
+        for option in RenderStyleOption.allCases {
+            XCTAssertEqual(RenderStyleOption(option.style), option,
+                           "\(option) MUST survive the trip through RenderSettings.Style and back")
+        }
+    }
+
+    // The background picker enumerates the same way, so `RenderBackground` MUST be `CaseIterable`
+    // and every case MUST carry a label a user can tell apart from the other two.
+    func testRenderBackgroundOffersAllThreeWithDistinctNonEmptyLabels() {
+        XCTAssertEqual(RenderBackground.allCases, [.blackOnWhite, .whiteOnBlack, .postToneMapSDR],
+                       "The picker MUST offer all three backgrounds the renderer implements")
+        for background in RenderBackground.allCases {
+            XCTAssertFalse(background.description.isEmpty, "\(background) MUST carry a picker label")
+        }
+        XCTAssertEqual(Set(RenderBackground.allCases.map(\.description)).count, RenderBackground.allCases.count,
+                       "Two backgrounds sharing a label would be indistinguishable in the picker")
+    }
+
+    // `RenderSettings.make` is the ONE place picker state becomes settings, and it MUST be total:
+    // a control that can produce a configuration the initializer rejects would either trap or
+    // silently do nothing, and the user would have no way to tell which. Clamping the cell size is
+    // what removes the only throwing condition, so `make` never has an error to hide.
+    func testRenderSettingsMakeClampsNonPositiveCellSizeAndPreservesEverythingElse() throws {
+        let palette = try Palette(colors: blackWhite)
+        for rejected in [0, -1, Int.min + 1] {
+            let settings = RenderSettings.make(style: .ascii(.text), palette: palette,
+                                               background: .whiteOnBlack, cellSize: rejected, toneMap: true)
+            XCTAssertEqual(settings.cellSize, 1, "Cell size \(rejected) MUST clamp to the smallest legal cell")
+            XCTAssertEqual(settings.style, .ascii(.text), "Clamping MUST NOT change the chosen style")
+            XCTAssertEqual(settings.palette, palette, "Clamping MUST NOT change the chosen palette")
+            XCTAssertEqual(settings.background, .whiteOnBlack, "Clamping MUST NOT change the chosen background")
+            XCTAssertTrue(settings.toneMap, "Clamping MUST NOT change the tone-map choice")
+        }
+        let kept = RenderSettings.make(style: .dither(.atkinson), palette: palette,
+                                       background: .postToneMapSDR, cellSize: 7, toneMap: false)
+        XCTAssertEqual(kept.cellSize, 7, "A legal cell size MUST be carried through unchanged")
+        XCTAssertEqual(kept.style, .dither(.atkinson), "The assembled settings MUST carry the chosen style")
+        XCTAssertEqual(kept.background, .postToneMapSDR, "The assembled settings MUST carry the chosen background")
+        XCTAssertFalse(kept.toneMap, "The assembled settings MUST carry the tone-map choice")
+    }
+
     private func sysctlString(_ key: String) -> String {
         var size = 0; sysctlbyname(key, nil, &size, nil, 0)
         var value = [CChar](repeating: 0, count: size); sysctlbyname(key, &value, &size, nil, 0)

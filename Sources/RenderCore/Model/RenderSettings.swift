@@ -24,7 +24,18 @@ enum ASCIIGlyphSet: String, CaseIterable, Sendable, Equatable {
     }
 }
 
-enum RenderBackground: Sendable, Equatable { case blackOnWhite, whiteOnBlack, postToneMapSDR }
+enum RenderBackground: Sendable, Equatable, CaseIterable, CustomStringConvertible {
+    case blackOnWhite, whiteOnBlack, postToneMapSDR
+    /// Picker label. Kept short because it is read inside a control, not a sentence; the case name
+    /// is the wrong thing to show a user and `String(describing:)` would otherwise show it.
+    var description: String {
+        switch self {
+        case .blackOnWhite: return "Black on White"
+        case .whiteOnBlack: return "White on Black"
+        case .postToneMapSDR: return "Source (SDR)"
+        }
+    }
+}
 enum RenderIntent: Sendable, Equatable { case preview, still, export }
 
 /// sRGB color triple, the only palette entry type. Custom palettes MUST use 2–16 colors.
@@ -195,6 +206,15 @@ enum PaletteCatalog {
     /// Every usable palette in `bundle`'s catalogue, in the order the file lists them (the order is
     /// the picker's order, so it is preserved rather than sorted), or `[fallback]` when the file
     /// yields none.
+    /// The main bundle's catalogue, decoded ONCE per process.
+    ///
+    /// SwiftUI re-initialises a `View` struct every time its parent re-evaluates `body`, so a
+    /// `let palettes = PaletteCatalog.bundled()` stored on a view is NOT read once — it re-opens
+    /// and re-decodes the resource on every published change, which during a scrub is once per
+    /// frame. Views read this instead. `bundled(in:)` stays available so a test can point at a
+    /// bundle that lacks the resource.
+    static let shared: [NamedPalette] = bundled()
+
     static func bundled(in bundle: Bundle = .main) -> [NamedPalette] {
         guard let url = bundle.url(forResource: "BundledPalettes", withExtension: "json"),
               let data = try? Data(contentsOf: url),
@@ -223,5 +243,71 @@ enum PaletteCatalog {
     /// costs the entry its exact colour and nothing else.
     private static func component(_ value: Int) -> UInt8 {
         UInt8(min(255, max(0, value)))
+    }
+}
+
+/// The flat, enumerable form of `RenderSettings.Style` that a picker can bind to.
+///
+/// It exists because `RenderSettings.Style` CANNOT be one: it carries associated values, so it is
+/// not `CaseIterable` and a control has no way to list the six styles the renderer implements.
+/// Making `Style` itself `CaseIterable` would mean inventing an `allCases` that names particular
+/// dither modes and glyph sets inside the rendering model, where the choice belongs to the UI —
+/// so the enumeration lives here, next to the picker's needs, and `style`/`init(_:)` keep the two
+/// forms in lockstep.
+enum RenderStyleOption: Hashable, Sendable, CaseIterable, CustomStringConvertible {
+    case dither(DitherMode)
+    case ascii(ASCIIGlyphSet)
+
+    /// Every style the renderer implements, dither modes first. Derived from the two source enums
+    /// rather than written out, so a new dither mode or glyph set reaches the picker automatically
+    /// instead of being silently unreachable until someone remembers this list.
+    static var allCases: [RenderStyleOption] {
+        DitherMode.allCases.map(RenderStyleOption.dither) + ASCIIGlyphSet.allCases.map(RenderStyleOption.ascii)
+    }
+
+    init(_ style: RenderSettings.Style) {
+        switch style {
+        case let .dither(mode): self = .dither(mode)
+        case let .ascii(set): self = .ascii(set)
+        }
+    }
+
+    var style: RenderSettings.Style {
+        switch self {
+        case let .dither(mode): return .dither(mode)
+        case let .ascii(set): return .ascii(set)
+        }
+    }
+
+    /// Whether this style reads `RenderSettings.cellSize`. The cell-size control is gated on it:
+    /// cell size is the ASCII inverse-density block and means nothing to a dither mode.
+    var usesCellSize: Bool {
+        if case .ascii = self { return true }
+        return false
+    }
+
+    var description: String {
+        switch self {
+        case let .dither(mode): return "Dither · \(mode)"
+        case let .ascii(set): return "ASCII · \(set.rawValue)"
+        }
+    }
+}
+
+/// Builds settings from picker state — the ONE place that conversion happens, so a control and an
+/// export can never assemble the same choices differently.
+extension RenderSettings {
+    /// Total by construction: it never throws and never traps.
+    ///
+    /// `RenderSettings.init` has exactly one throwing condition — an ASCII style with a cell size
+    /// below 1 — and clamping to `max(1, cellSize)` is what makes it unreachable. That clamp is
+    /// what makes the `try!` honest rather than a bet: without it, a stepper that produced 0 would
+    /// either take the app down or (if the throw were swallowed) leave the control visibly moved
+    /// and nothing changed, which is the worse of the two because the user cannot see it happen.
+    /// Clamping instead shows the cell size snapping back to 1, which is the truth.
+    static func make(style: RenderStyleOption, palette: Palette,
+                     background: RenderBackground, cellSize: Int, toneMap: Bool) -> RenderSettings {
+        try! RenderSettings(style: style.style, palette: palette, background: background,
+                            cellSize: max(1, cellSize), toneMap: toneMap)
     }
 }
