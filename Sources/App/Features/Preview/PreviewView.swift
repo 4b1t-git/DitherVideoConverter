@@ -8,10 +8,14 @@ import SwiftUI
 struct PreviewView: View {
     @ObservedObject var state: PreviewState
     let snapshot: PreviewSnapshot?
+    /// The settings the snapshot was rendered WITH. The renderer's byte means nothing on its own —
+    /// brightness under `.postToneMapSDR`, a palette index otherwise — so painting it requires the
+    /// same settings that produced it.
+    let settings: RenderSettings
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            EquatableView(content: PreviewFrameView(snapshot: snapshot))
+            EquatableView(content: PreviewFrameView(snapshot: snapshot, settings: settings))
                 .frame(minWidth: 320, minHeight: 180)
             PreviewOverlayView(state: state).padding(4)
         }
@@ -19,20 +23,24 @@ struct PreviewView: View {
 }
 
 /// Frame image; wrapped in `EquatableView` by `PreviewView` so SwiftUI re-renders it ONLY when the
-/// snapshot changes. A timestamp-only overlay bump leaves this view's inputs equal → skipped (R3-010).
+/// snapshot or the settings that colour it change. A timestamp-only overlay bump leaves this view's
+/// inputs equal → skipped (R3-010).
 ///
-/// The snapshot is drawn as ONE grayscale `CGImage` rather than one filled rect per pixel: the
-/// previous `Canvas` path issued O(W×H) draw calls per repaint, which only survived because the
-/// test fixture is 16×8. Interpolation is explicitly OFF — this is a dither/ASCII renderer, so
-/// smoothing the upscale would blend neighbouring cells and misrepresent the very output the user
-/// is inspecting. A `nil` snapshot, or a snapshot too short for its own request, renders the empty
-/// placeholder instead of crashing.
+/// The snapshot is drawn as ONE `CGImage` rather than one filled rect per pixel: the previous
+/// `Canvas` path issued O(W×H) draw calls per repaint, which only survived because the test fixture
+/// is 16×8. Interpolation is explicitly OFF — this is a dither/ASCII renderer, so smoothing the
+/// upscale would blend neighbouring cells and misrepresent the very output the user is inspecting.
+/// A `nil` snapshot, or a snapshot too short for its own request, renders the empty placeholder
+/// instead of crashing.
 struct PreviewFrameView: View, Equatable {
     let snapshot: PreviewSnapshot?
+    /// Part of the identity of what is painted, hence part of `==`: the same bytes under a
+    /// different palette or background are a DIFFERENT picture, so a settings change MUST repaint.
+    let settings: RenderSettings
     var body: some View {
         ZStack {
             Color.clear
-            if let image = snapshot?.makeGrayscaleImage() {
+            if let image = snapshot?.makeImage(settings: settings) {
                 Image(decorative: image, scale: 1)
                     .interpolation(.none)
                     .resizable()
@@ -41,7 +49,9 @@ struct PreviewFrameView: View, Equatable {
         }
         .accessibilityHidden(true)
     }
-    static func == (lhs: PreviewFrameView, rhs: PreviewFrameView) -> Bool { lhs.snapshot == rhs.snapshot }
+    static func == (lhs: PreviewFrameView, rhs: PreviewFrameView) -> Bool {
+        lhs.snapshot == rhs.snapshot && lhs.settings == rhs.settings
+    }
 }
 
 /// Timestamp / phase overlay. Depends on `PreviewState` only — re-evaluates on every timestamp

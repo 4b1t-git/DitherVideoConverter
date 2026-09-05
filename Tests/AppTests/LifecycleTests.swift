@@ -168,15 +168,35 @@ final class LifecycleTests: XCTestCase {
                       "Wired .aacFallback disclosure text MUST be surfaced, not the requested passthrough text")
     }
 
-    // R3-010 (Unit 6 carry-forward): `PreviewFrameView` `Equatable` MUST depend ONLY on the snapshot,
-    // so a per-timestamp overlay bump does NOT repaint the O(W×H) frame canvas.
+    // R3-010 (Unit 6 carry-forward): `PreviewFrameView` `Equatable` MUST NOT depend on the timestamp,
+    // so a per-timestamp overlay bump does NOT repaint the O(W×H) frame canvas. The settings are
+    // passed unchanged on both sides here, so this still measures the snapshot alone.
     func testPreviewFrameViewEqualityDependsOnlyOnSnapshot() async throws {
-        let pipeline = PreviewPipeline(renderer: MetalFrameRenderer(), settings: try settings(), previewScale: 0.5)
+        let render = try settings()
+        let pipeline = PreviewPipeline(renderer: MetalFrameRenderer(), settings: render, previewScale: 0.5)
         let s0 = try await pipeline.render(timestamp: 0, source: ramp, sourceWidth: 16, sourceHeight: 8)
-        XCTAssertEqual(PreviewFrameView(snapshot: s0), PreviewFrameView(snapshot: s0), "Same snapshot MUST be equal (R3-010)")
+        XCTAssertEqual(PreviewFrameView(snapshot: s0, settings: render),
+                       PreviewFrameView(snapshot: s0, settings: render), "Same snapshot MUST be equal (R3-010)")
         let s1 = try await pipeline.render(timestamp: 1, source: ramp, sourceWidth: 16, sourceHeight: 8)
-        XCTAssertNotEqual(PreviewFrameView(snapshot: s0), PreviewFrameView(snapshot: s1), "A different snapshot MUST NOT be equal (R3-010)")
-        XCTAssertEqual(PreviewFrameView(snapshot: nil), PreviewFrameView(snapshot: nil), "Empty frames MUST be equal (R3-010)")
+        XCTAssertNotEqual(PreviewFrameView(snapshot: s0, settings: render),
+                          PreviewFrameView(snapshot: s1, settings: render), "A different snapshot MUST NOT be equal (R3-010)")
+        XCTAssertEqual(PreviewFrameView(snapshot: nil, settings: render),
+                       PreviewFrameView(snapshot: nil, settings: render), "Empty frames MUST be equal (R3-010)")
+    }
+
+    // The other half of that property: the settings decide what the snapshot's bytes MEAN, so the
+    // same bytes under a different palette or background are a different picture. Leaving settings
+    // out of `==` would freeze the on-screen frame on a settings change (R3-010 must not become an
+    // excuse to skip a repaint that is genuinely needed).
+    func testPreviewFrameViewRepaintsWhenSettingsChange() async throws {
+        let render = try settings()
+        let pipeline = PreviewPipeline(renderer: MetalFrameRenderer(), settings: render, previewScale: 0.5)
+        let snapshot = try await pipeline.render(timestamp: 0, source: ramp, sourceWidth: 16, sourceHeight: 8)
+        let other = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw),
+                                       background: .postToneMapSDR)
+        XCTAssertNotEqual(PreviewFrameView(snapshot: snapshot, settings: render),
+                          PreviewFrameView(snapshot: snapshot, settings: other),
+                          "A settings change MUST repaint the frame even when the snapshot is unchanged")
     }
 
     // R3-011 (preview-render-wiring): the preview render is BOUNDED so the published snapshot and
@@ -513,10 +533,9 @@ final class LifecycleTests: XCTestCase {
     // The app's own default settings MUST render displayable BRIGHTNESS, never palette indices.
     //
     // `MetalFrameRenderer.render` documents that its byte is stylized brightness only for
-    // `.postToneMapSDR`; for every other background it is a palette INDEX (0…N-1). Nothing
-    // downstream maps indices back to colours — `ExportSession` writes the byte straight into the
-    // luma plane and `PreviewSnapshot.makeGrayscaleImage` reads it straight as grey — so with the
-    // 2-colour default palette an index render is {0, 1}: two shades of black.
+    // `.postToneMapSDR`; for every other background it is a palette INDEX (0…N-1). With the
+    // 2-colour default palette an index render is {0, 1}, which the default settings MUST NOT ask
+    // the display path to re-interpret as brightness.
     //
     // This is the test the suite never had. Every existing check compares the pipeline against
     // ITSELF (preview-vs-export parity, the pinned EXPORT_GOLDEN hash), so all of them held
@@ -571,6 +590,49 @@ final class LifecycleTests: XCTestCase {
         }
         XCTAssertGreaterThan(Int(maximum) - Int(minimum), 32,
                              "A gradient source MUST NOT export as a near-uniform frame (min=\(minimum) max=\(maximum))")
+    }
+
+    // The same property as above, for the background that was actually broken. Under
+    // `.blackOnWhite` the renderer emits palette INDICES {0, 1}; writing those bytes straight into
+    // the pixel buffer produced two indistinguishable shades of black, so a gradient source
+    // exported as a uniform frame no matter what the palette said. Resolving the index through the
+    // palette restores the black/white contrast the background is named for.
+    func testExportedFrameUnderBlackOnWhiteIsNotUniform() async throws {
+        let width = 64, height = 16
+        let gradient = (0..<(width * height)).map { UInt8(truncatingIfNeeded: ($0 % width) * 4) }
+        let source = ExportSource(pixels: gradient, sourceWidth: width, sourceHeight: height, presentationTime: 0)
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let render = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: bw),
+                                        background: .blackOnWhite)
+        let session = ExportSession(renderer: MetalFrameRenderer(),
+                                    settings: try ExportSettings(render: render, scale: 1))
+        _ = try await session.export(sources: [source], audio: .none, audioSource: nil, outputURL: url)
+
+        let written = AVURLAsset(url: url)
+        let videoTracks = try await written.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videoTracks.first)
+        let reader = try AVAssetReader(asset: written)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        let sample = try XCTUnwrap(output.copyNextSampleBuffer(), "The export MUST contain a readable frame")
+        let buffer = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let base = try XCTUnwrap(CVPixelBufferGetBaseAddressOfPlane(buffer, 0)).assumingMemoryBound(to: UInt8.self)
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        var minimum = UInt8.max, maximum = UInt8.min
+        for y in 0..<CVPixelBufferGetHeightOfPlane(buffer, 0) {
+            for x in 0..<CVPixelBufferGetWidthOfPlane(buffer, 0) {
+                let value = base[y * bytesPerRow + x]
+                minimum = min(minimum, value); maximum = max(maximum, value)
+            }
+        }
+        XCTAssertGreaterThan(Int(maximum) - Int(minimum), 32,
+                             "A gradient source under .blackOnWhite MUST NOT export as a near-uniform frame (min=\(minimum) max=\(maximum))")
     }
 
     private func settings() throws -> RenderSettings {

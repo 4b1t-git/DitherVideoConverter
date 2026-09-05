@@ -142,40 +142,61 @@ final class PreviewTests: XCTestCase {
     }
 
     // R3-011 (preview-render-wiring): the on-screen preview MUST be able to draw the snapshot as a
-    // single 8-bit grayscale `CGImage` rather than one fill per pixel. The image's geometry is the
-    // request's geometry — never the source's, and never the byte count's.
+    // single `CGImage` rather than one fill per pixel. The image's geometry is the request's
+    // geometry — never the source's, and never the byte count's.
     func testGrayscaleImageMatchesRequestDimensions() throws {
         let request = RenderRequest(timestamp: 0, width: 4, height: 3, intent: .preview, scale: 0.5)
         let snapshot = PreviewSnapshot(request: request, pixels: [UInt8](repeating: 128, count: 4 * 3))
-        let image = try XCTUnwrap(snapshot.makeGrayscaleImage(), "A fully-populated snapshot MUST produce an image")
+        let image = try XCTUnwrap(snapshot.makeImage(settings: try sdrSettings()),
+                                  "A fully-populated snapshot MUST produce an image")
         XCTAssertEqual(image.width, 4, "Image width MUST come from RenderRequest.width")
         XCTAssertEqual(image.height, 3, "Image height MUST come from RenderRequest.height")
     }
 
     // A truncated snapshot MUST fail closed: returning an image over a short buffer would let
     // CoreGraphics read past the end of the array. `nil` is the only safe answer.
-    func testGrayscaleImageIsNilWhenPixelsAreShorterThanRequest() {
+    func testGrayscaleImageIsNilWhenPixelsAreShorterThanRequest() throws {
+        let settings = try sdrSettings()
         let request = RenderRequest(timestamp: 0, width: 8, height: 8, intent: .preview, scale: 0.5)
         let short = PreviewSnapshot(request: request, pixels: [UInt8](repeating: 7, count: 8 * 8 - 1))
-        XCTAssertNil(short.makeGrayscaleImage(), "A snapshot shorter than width*height MUST NOT produce an image")
+        XCTAssertNil(short.makeImage(settings: settings), "A snapshot shorter than width*height MUST NOT produce an image")
         let empty = PreviewSnapshot(request: RenderRequest(timestamp: 0, width: 0, height: 0, intent: .preview, scale: 1),
                                     pixels: [])
-        XCTAssertNil(empty.makeGrayscaleImage(), "A zero-sized request MUST NOT produce an image")
+        XCTAssertNil(empty.makeImage(settings: settings), "A zero-sized request MUST NOT produce an image")
     }
 
-    // Dimensions alone would pass with an all-black image: assert the real luma VALUES survive the
-    // trip through `CGDataProvider` untouched (bytesPerRow == width, no padding, no premultiply).
+    // Dimensions alone would pass with an all-black image: assert the real VALUES survive the trip
+    // through `CGDataProvider` untouched (bytesPerRow == width*4, no padding, no premultiply). Under
+    // `.postToneMapSDR` the renderer's byte IS brightness, so every pixel MUST come back as that
+    // exact grey — the mapping may not re-quantize what the renderer already resolved.
     func testGrayscaleImageRoundTripsPixelValues() throws {
         let width = 4, height = 2
         let ramp: [UInt8] = [0, 17, 200, 255, 33, 90, 128, 254]
         let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .preview, scale: 1)
-        let image = try XCTUnwrap(PreviewSnapshot(request: request, pixels: ramp).makeGrayscaleImage())
+        let image = try XCTUnwrap(PreviewSnapshot(request: request, pixels: ramp).makeImage(settings: try sdrSettings()))
         XCTAssertEqual(image.bitsPerComponent, 8)
-        XCTAssertEqual(image.bytesPerRow, width, "bytesPerRow MUST equal width so rows are tightly packed")
+        XCTAssertEqual(image.bytesPerRow, width * 4, "bytesPerRow MUST equal width*4 so rows are tightly packed")
         let data = try XCTUnwrap(image.dataProvider?.data as Data?)
-        XCTAssertEqual(Array(data.prefix(width)), Array(ramp.prefix(width)),
-                       "The first row's grayscale bytes MUST equal the snapshot's own bytes")
-        XCTAssertEqual(Array(data), ramp, "Every grayscale byte MUST round-trip unchanged")
+        let expected: [UInt8] = ramp.flatMap { [$0, $0, $0, 255] }
+        XCTAssertEqual(Array(data.prefix(width * 4)), Array(expected.prefix(width * 4)),
+                       "The first row's RGBA bytes MUST equal the snapshot's own bytes painted as grey")
+        XCTAssertEqual(Array(data), expected, "Every byte MUST round-trip unchanged through the colour mapping")
+    }
+
+    // The preview MUST paint through the SAME mapping the export writes: under a palette background
+    // the renderer's byte is an INDEX, and reading it as grey is what made a colour palette
+    // impossible to see on screen.
+    func testImageResolvesPaletteIndicesToPaletteColours() throws {
+        let sepia = [SRGBColor(r: 0, g: 0, b: 0), SRGBColor(r: 80, g: 40, b: 20),
+                     SRGBColor(r: 180, g: 130, b: 80), SRGBColor(r: 250, g: 240, b: 210)]
+        let settings = try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: sepia),
+                                          background: .blackOnWhite)
+        let request = RenderRequest(timestamp: 0, width: 4, height: 1, intent: .preview, scale: 1)
+        let image = try XCTUnwrap(PreviewSnapshot(request: request, pixels: [0, 1, 2, 3]).makeImage(settings: settings))
+        let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+        let expected: [UInt8] = sepia.flatMap { [$0.r, $0.g, $0.b, 255] }
+        XCTAssertEqual(Array(data), expected,
+                       "Each palette index MUST paint as its own sRGB colour, not as grey 0…3")
     }
 
     private func makePipeline(scale: Double) async throws -> PreviewPipeline {
@@ -184,5 +205,11 @@ final class PreviewTests: XCTestCase {
 
     private func settings() throws -> RenderSettings {
         try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: blackWhite))
+    }
+    /// Settings whose renderer output is BRIGHTNESS, so the image tests above can assert the byte
+    /// itself survives rather than reasoning about palette-index resolution at the same time.
+    private func sdrSettings() throws -> RenderSettings {
+        try RenderSettings(style: .dither(.bayer), palette: try Palette(colors: blackWhite),
+                           background: .postToneMapSDR)
     }
 }
