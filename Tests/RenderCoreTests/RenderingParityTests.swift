@@ -52,6 +52,17 @@ final class RenderingParityTests: XCTestCase {
         }
     }
 
+    // The asserted property is unchanged — a smaller cell MUST make the picture denser — but the
+    // MEASUREMENT had to change. It used to sample each cell's CENTRE PIXEL and count the cells
+    // whose centre came back dark, which was only meaningful because the implementation filled
+    // every cell with one value: the centre stood in for the cell because the cell was uniform. It
+    // measured an artefact of the mosaic, not a property of the output. With a real glyph, a cell
+    // holding '.' has NO ink at its centre and ':' has ink only above and below it, so "is the
+    // centre dark" now answers a question about where a character's strokes happen to fall.
+    //
+    // The honest generalisation is to stop sampling and count every dark pixel in the frame. Dark
+    // still means what it meant before — the palette is [white, black], so byte 0 is index 0, the
+    // white background, and anything else is ink — over all 256 pixels instead of one per cell.
     func testASCIIDensityIncreasesWhenCellSizeDecreases() async throws {
         let palette = try Palette(colors: [SRGBColor(r: 255, g: 255, b: 255), SRGBColor(r: 0, g: 0, b: 0)])
         let renderer = MetalFrameRenderer()
@@ -61,18 +72,166 @@ final class RenderingParityTests: XCTestCase {
             let request = RenderRequest(timestamp: 0, width: 16, height: 16, intent: .still, scale: 1)
             let output = try await renderer.render(request: request, settings: settings,
                                                    pixels: source, sourceWidth: 16, sourceHeight: 16)
-            let c = cellSize, cellsX = (16 + c - 1) / c, cellsY = (16 + c - 1) / c
-            var darkCells = 0
-            for cy in 0..<cellsY { for cx in 0..<cellsX {
-                let px = min(cx * c + c / 2, 15), py = min(cy * c + c / 2, 15)
-                if output[py * 16 + px] != 0 { darkCells += 1 }   // 0 = white background
-            } }
-            return darkCells
+            return output.count { $0 != 0 }   // 0 = index 0 = the white background
         }
         let coarse = try await density(cellSize: 8)
         let fine = try await density(cellSize: 4)
         XCTAssertGreaterThan(fine, coarse,
-                             "Smaller cell size MUST produce strictly greater density using only bundled glyphs/font")
+                             "Smaller cell size MUST produce strictly greater density using only bundled glyphs/font "
+                             + "(cell 4 inked \(fine) of 256 pixels, cell 8 inked \(coarse))")
+    }
+
+    // Glyph selection is what makes an ASCII render a picture rather than a texture: a brighter
+    // cell MUST reach for a sparser character. Two brightnesses far enough apart to land on
+    // different glyphs must therefore produce different PATTERNS, not merely different averages —
+    // the mosaic also gave those cells different means, which is exactly why a mean comparison
+    // could not detect this defect.
+    func testTwoBrightnessesSelectDifferentGlyphsAndDrawDifferentPatterns() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let cell = 8, width = 16, height = 8
+        // Left half dark (dense glyph), right half light (sparse glyph).
+        let source = (0..<(width * height)).map { UInt8($0 % width < 8 ? 20 : 220) }
+        let settings = try RenderSettings(style: .ascii(.text), palette: palette,
+                                          background: .postToneMapSDR, cellSize: cell)
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .still, scale: 1)
+        let output = try await renderer.render(request: request, settings: settings,
+                                               pixels: source, sourceWidth: width, sourceHeight: height)
+        let left = (0..<cell).flatMap { y in (0..<cell).map { x in output[y * width + x] } }
+        let right = (0..<cell).flatMap { y in (cell..<(2 * cell)).map { x in output[y * width + x] } }
+        XCTAssertNotEqual(left, right, "Two cells that select different glyphs MUST draw different pixels")
+        // Compared as multisets too, so this fails if one cell is only a rearrangement of the other.
+        XCTAssertNotEqual(left.sorted(), right.sorted(),
+                          "The two cells MUST differ in their ink, not only in where the ink sits")
+        XCTAssertGreaterThan(left.reduce(0) { $0 + (255 - Int($1)) }, right.reduce(0) { $0 + (255 - Int($1)) },
+                             "Inverse density: the DARKER source cell MUST carry the denser character")
+    }
+
+    // Harness, not a gate: it reports what a full-resolution ASCII frame costs here so the Metal-port
+    // decision comes from measurement, with a dither frame beside it as the reference point (dither
+    // already holds 30 fps). It asserts nothing about time — a timing assertion on a shared machine
+    // fails for reasons that have nothing to do with this code.
+    func testASCIIFullResolutionThroughputHarness() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let width = 1_920, height = 1_080
+        let source = (0..<(width * height)).map { UInt8(truncatingIfNeeded: $0 &* 37 &+ 11) }
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .export, scale: 1)
+        func report(_ label: String, _ settings: RenderSettings) async throws {
+            // Warm-up first: the opening ASCII frame at a new cell size also pays to rasterize the
+            // atlas, and billing that one-off cost per frame would overstate an export's real cost.
+            _ = try await renderer.render(request: request, settings: settings,
+                                          pixels: source, sourceWidth: width, sourceHeight: height)
+            let start = ContinuousClock.now
+            let output = try await renderer.render(request: request, settings: settings,
+                                                   pixels: source, sourceWidth: width, sourceHeight: height)
+            let elapsed = start.duration(to: .now)
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            XCTAssertEqual(output.count, width * height, "\(label) MUST still produce one byte per oriented pixel")
+            print("ASCII_THROUGHPUT style=\(label) width=\(width) height=\(height) "
+                  + "elapsed=\(String(format: "%.6f", seconds)) fps=\(String(format: "%.2f", 1 / max(seconds, 1e-9)))")
+        }
+        for cell in [4, 8, 16] {
+            try await report("ascii-text-cell\(cell)", try RenderSettings(style: .ascii(.text), palette: palette, cellSize: cell))
+        }
+        try await report("dither-bayer", try RenderSettings(style: .dither(.bayer), palette: palette))
+    }
+
+    // `GlyphAtlas` is the rasterization the renderer had no access to: one coverage bitmap per
+    // glyph, laid out like a cell, so `asciiStylize` can blit a character instead of inventing a
+    // brightness from its index. The blit indexes by that shape, so shape is checked before ink.
+    // Determinism rides along: the renderer caches one atlas per (set, cell) and every cell of a
+    // frame reads it, so a rasterizer that varied would make two renders of one frame differ by
+    // when the cache happened to be built — what
+    // `testEveryDitherModeRendersTwiceToTheSameReference` pins for the dither modes.
+    func testGlyphAtlasRasterizesOneCellSizedBitmapPerGlyphOfTheSet() {
+        for set in ASCIIGlyphSet.allCases { for cellSize in [1, 4, 8, 16] {
+            let atlas = GlyphAtlas(set: set, cellSize: cellSize)
+            XCTAssertEqual(atlas.cellSize, cellSize, "The atlas MUST report the cell it rasterized for")
+            XCTAssertEqual(atlas.bitmaps.count, set.glyphs.count,
+                           "\(set.rawValue) at cell \(cellSize) MUST carry one bitmap per bundled glyph")
+            XCTAssertEqual(atlas.bitmaps.map(\.count), Array(repeating: cellSize * cellSize, count: set.glyphs.count),
+                           "Every \(set.rawValue) glyph MUST cover exactly one \(cellSize)×\(cellSize) cell")
+            XCTAssertEqual(atlas.bitmaps, GlyphAtlas(set: set, cellSize: cellSize).bitmaps,
+                           "Rasterizing \(set.rawValue) at cell \(cellSize) twice MUST give identical coverage")
+        } }
+    }
+
+    // Coverage, not colour: a value is how much of the pixel the character covers, so `asciiStylize`
+    // alone decides whether ink reads dark or light. The space glyph is the proof — the mapping
+    // picks it for a fully bright cell, so it MUST be empty at every palette, background and cell.
+    func testTextGlyphSetRastersSpaceAsEmptyAndItsDensestGlyphAsRealInk() {
+        for cellSize in [4, 8, 16] {
+            let ink = GlyphAtlas(set: .text, cellSize: cellSize).bitmaps.map { $0.reduce(0) { $0 + Int($1) } }
+            XCTAssertEqual(ink[0], 0, "The space glyph MUST rasterize to zero ink at cell \(cellSize)")
+            XCTAssertGreaterThan(ink[ink.count - 1], 0,
+                                 "The densest glyph MUST rasterize to strictly positive ink at cell \(cellSize)")
+            XCTAssertEqual(ink.firstIndex(of: ink.min()!), 0, "No glyph may carry less ink than the space glyph")
+        }
+    }
+
+    // `GlyphCatalog.txt` orders the text set sparsest-first and the mapping relies on it: a bright
+    // cell MUST end up lighter than a dark one. The rendered metrics do NOT make that sequence
+    // non-decreasing, though — in Menlo ':' out-inks '-', and '#' out-inks both '%' and '@' — so a
+    // monotone ramp would assert something the font does not do. What the font DOES do at every
+    // cell size is separate the halves: every glyph in the dense half out-inks every glyph in the
+    // sparse half. That is the property the mapping depends on, checked instead of a stricter one
+    // that would only be green by luck.
+    func testTextGlyphSetInkSeparatesItsSparseHalfFromItsDenseHalf() {
+        for cellSize in [4, 8, 16] {
+            let ink = GlyphAtlas(set: .text, cellSize: cellSize).bitmaps.map { $0.reduce(0) { $0 + Int($1) } }
+            let sparsest = ink[0..<(ink.count / 2)], densest = ink[(ink.count / 2)...]
+            XCTAssertGreaterThan(densest.min()!, sparsest.max()!,
+                                 "At cell \(cellSize) the text set's dense half MUST out-ink its sparse half; "
+                                 + "sparse=\(Array(sparsest)) dense=\(Array(densest))")
+        }
+    }
+
+    // `RenderSettings` rejects a cell size below 1 and `RenderSettings.make` clamps one, so the
+    // renderer never asks — but the atlas allocates a `cellSize × cellSize` buffer and sizes a font
+    // from it, and both trap on a non-positive number. Clamping keeps a future caller's mistake a
+    // wrong picture rather than a crash.
+    func testGlyphAtlasClampsANonPositiveCellSizeInsteadOfTrapping() {
+        for rejected in [0, -1, -16] {
+            let atlas = GlyphAtlas(set: .text, cellSize: rejected)
+            XCTAssertEqual(atlas.cellSize, 1, "Cell size \(rejected) MUST clamp to the smallest legal cell")
+            XCTAssertEqual(atlas.bitmaps.map(\.count), Array(repeating: 1, count: ASCIIGlyphSet.text.glyphs.count),
+                           "A clamped atlas MUST still carry every glyph, each one pixel rather than zero")
+        }
+    }
+
+    // The defect this slice fixes: `asciiStylize` chose a glyph from the cell average, then threw
+    // it away and filled the whole cell with one brightness derived from the glyph's INDEX. The
+    // output was a mosaic — ASCII in name only — and nothing in the suite could tell, because every
+    // check only ever compared one cell against another.
+    //
+    // A rasterized glyph is by definition ink in some pixels of the cell and background in the
+    // rest, so the smallest honest statement of "a character was drawn" is that ONE cell holds more
+    // than one distinct value. Under `.postToneMapSDR` the byte IS the stylized brightness, so this
+    // reads the glyph's own coverage with no palette in the way.
+    func testASCIICellCarriesGlyphShapeRatherThanOneUniformFill() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let cell = 8, width = 32, height = 32
+        // A diagonal ramp: every cell averages to a different brightness, so every cell selects a
+        // glyph and none of them is the empty space glyph by accident.
+        let source = (0..<(width * height)).map { UInt8(truncatingIfNeeded: 30 + ($0 % width) * 3 + ($0 / width) * 3) }
+        let settings = try RenderSettings(style: .ascii(.text), palette: palette,
+                                          background: .postToneMapSDR, cellSize: cell)
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .still, scale: 1)
+        let output = try await renderer.render(request: request, settings: settings,
+                                               pixels: source, sourceWidth: width, sourceHeight: height)
+        let origins = stride(from: 0, to: height, by: cell).flatMap { y in
+            stride(from: 0, to: width, by: cell).map { (y, $0) }
+        }
+        let shapedCells = origins.count { cellY, cellX in
+            Set((cellY..<(cellY + cell)).flatMap { y in (cellX..<(cellX + cell)).map { output[y * width + $0] } }).count > 1
+        }
+        XCTAssertGreaterThan(shapedCells, 0,
+                             "An ASCII cell MUST contain a rasterized glyph — ink in some pixels and background in "
+                             + "the rest. A cell of one repeated value is the mosaic this replaced, not a character.")
+        XCTAssertEqual(shapedCells, (width / cell) * (height / cell),
+                       "EVERY cell of a ramp that selects a non-empty glyph MUST carry that glyph's shape")
     }
 
     func testToneMapAppliedToHDRSourceBeforeStyling() async throws {
