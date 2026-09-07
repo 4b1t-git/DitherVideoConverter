@@ -36,7 +36,24 @@ actor MetalFrameRenderer {
         }
         let adapted = adapt(pixels, sw: sourceWidth, sh: sourceHeight,
                             w: request.width, h: request.height)
-        let toned = settings.toneMap ? adapted.map(Self.toneMap) : adapted
+        // ONE place, ahead of everything: the inversion is applied to the adapted source before
+        // tone mapping and before the style switch, so every style inherits the same complemented
+        // frame and no style can hold a different opinion about what "inverted" means. Putting it
+        // inside `asciiStylize` would fix ASCII and leave dither with a flag that does nothing.
+        //
+        // BEFORE the tone map, not after, and the two are genuinely different pictures because the
+        // PQ→SDR transfer is non-linear. `toneMap` is strongly convex — its pinned goldens put
+        // everything up to 192 below 112 — so complementing its OUTPUT lands most of the frame in
+        // 255…143, i.e. back at the sparse end of the glyph ramp: over the whole 0…255 input range
+        // that order sends 121 values into the empty glyph slot and never reaches the densest one
+        // at all, which is the blank-subject defect this flag exists to remove. Inverting the raw
+        // source instead leaves the tone map doing its normal job on a complemented frame: the
+        // output spreads over all ten slots and stays inside the calibrated 0…235 range the
+        // roll-off deliberately keeps below display clip, rather than being pushed above it by a
+        // later subtraction. It is also what the flag's name promises — the SOURCE is inverted, and
+        // the pipeline that follows is unchanged.
+        let inverted = settings.invertSource ? adapted.map { 255 &- $0 } : adapted
+        let toned = settings.toneMap ? inverted.map(Self.toneMap) : inverted
         switch settings.style {
         case .dither(let mode):
             return try ditherStylize(toned, width: request.width, height: request.height,
