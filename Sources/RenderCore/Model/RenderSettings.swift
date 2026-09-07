@@ -102,13 +102,32 @@ struct RenderSettings: Sendable, Equatable {
     let background: RenderBackground
     let cellSize: Int
     let toneMap: Bool
+    /// Complements the SOURCE brightness before any style runs, so the whole pipeline sees a frame
+    /// whose lights and darks have traded places.
+    ///
+    /// What it buys the user is the mapping ASCII art is normally written in. `asciiStylize`
+    /// selects a glyph with `(255 - avg) * span / 255`, which gives the densest character to the
+    /// DARKEST cell — the print convention, ink on white paper. Footage is usually the opposite
+    /// arrangement: a bright subject on a dark field. Rendered under the print convention the
+    /// background takes every drop of ink and the subject comes out blank. Inverting the source
+    /// turns that mapping into bright → dense, the terminal convention, and hands dither modes the
+    /// tonal inverse of the same frame.
+    ///
+    /// WHY this is its own flag rather than a new meaning for `.whiteOnBlack`: that background
+    /// inverts the INK — it resolves the stylized brightness through `255 &- $0` on the way to a
+    /// palette index — which is exactly what its name says it does, and it does the same thing for
+    /// a dither mode, where "select the densest glyph" has no meaning at all. Redefining it to
+    /// invert SELECTION instead would break a mode that already has a spec, tests, and a picker
+    /// label, to add a different one. Two orthogonal choices need two controls: `.whiteOnBlack`
+    /// decides what colour the ink is, `invertSource` decides which end of the tonal range earns it.
+    let invertSource: Bool
 
     init(style: Style, palette: Palette,
          background: RenderBackground = .blackOnWhite,
-         cellSize: Int = 1, toneMap: Bool = false) throws {
+         cellSize: Int = 1, toneMap: Bool = false, invertSource: Bool = false) throws {
         if case .ascii = style, cellSize < 1 { throw RenderSettingsError.invalidCellSize(cellSize) }
         self.style = style; self.palette = palette; self.background = background
-        self.cellSize = cellSize; self.toneMap = toneMap
+        self.cellSize = cellSize; self.toneMap = toneMap; self.invertSource = invertSource
     }
 }
 
@@ -305,9 +324,14 @@ extension RenderSettings {
     /// either take the app down or (if the throw were swallowed) leave the control visibly moved
     /// and nothing changed, which is the worse of the two because the user cannot see it happen.
     /// Clamping instead shows the cell size snapping back to 1, which is the truth.
+    ///
+    /// `invertSource` defaults to `false` — the print convention the renderer has always used — so
+    /// that every existing caller that does not mention it assembles precisely what it assembled
+    /// before. The flag is opt-in or it is a silent change to every pinned render in the suite.
     static func make(style: RenderStyleOption, palette: Palette,
-                     background: RenderBackground, cellSize: Int, toneMap: Bool) -> RenderSettings {
+                     background: RenderBackground, cellSize: Int, toneMap: Bool,
+                     invertSource: Bool = false) -> RenderSettings {
         try! RenderSettings(style: style.style, palette: palette, background: background,
-                            cellSize: max(1, cellSize), toneMap: toneMap)
+                            cellSize: max(1, cellSize), toneMap: toneMap, invertSource: invertSource)
     }
 }

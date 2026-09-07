@@ -96,7 +96,9 @@ struct WorkspaceView: View {
 
     /// The render controls the `bitmap-ascii-rendering` spec requires the app to OFFER: the four
     /// dither modes and both bundled glyph sets, the three backgrounds, the bundled palettes, the
-    /// ASCII cell size, tone mapping, and the export-only scale.
+    /// ASCII cell size, tone mapping, and the export-only scale — plus the source inversion that
+    /// issue #47 added, which turns ASCII's glyph selection into the bright → dense mapping most
+    /// footage needs.
     ///
     /// The whole panel is disabled while an export is in flight. A settings change cannot reach a
     /// file that is already being written, so leaving the controls live would let the user believe
@@ -121,8 +123,15 @@ struct WorkspaceView: View {
                 Stepper("Cell size: \(coordinator.renderSettings.cellSize)", value: cellSizeSelection, in: 1...16)
                     .disabled(!RenderStyleOption(coordinator.renderSettings.style).usesCellSize)
                 Toggle("Tone map", isOn: toneMapSelection)
+                Toggle("Invert source", isOn: invertSourceSelection)
                 Spacer()
             }
+            // The one thing about the background choice a user cannot see coming, kept to a caption
+            // because it is a note about a control that is already on screen, not documentation.
+            // Measured on one real frame at cell 8: "Source (SDR)" produced 133 distinct values,
+            // the two palette backgrounds produced 2.
+            Text("Source (SDR) keeps glyph antialiasing; palette backgrounds quantize it to the palette size.")
+                .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Text(String(format: "Export scale: %.0f%%", coordinator.exportScale * 100)).monospacedDigit()
                 Slider(value: exportScaleSelection, in: 0.1...1.0).frame(maxWidth: 160)
@@ -137,7 +146,7 @@ struct WorkspaceView: View {
 
     /// Every control above derives its value FROM `coordinator.renderSettings` and writes the whole
     /// settings value back through `coordinator.updateRenderSettings`. There is deliberately NO
-    /// `@State` mirror of style/palette/background/cell size/tone map here.
+    /// `@State` mirror of style/palette/background/cell size/tone map/source inversion here.
     ///
     /// The coordinator owns those settings precisely because the spec requires preview, still, and
     /// export to share ONE configuration. A view-owned copy re-creates the divergence that design
@@ -181,6 +190,14 @@ struct WorkspaceView: View {
                 set: { self.apply(toneMap: $0) })
     }
 
+    /// Sits next to Tone map because both condition the SOURCE before any style runs, and derives
+    /// from the coordinator for the same reason every other control here does — a `@State` mirror
+    /// would let the checkbox and the render disagree with nothing on screen to say which is real.
+    private var invertSourceSelection: Binding<Bool> {
+        Binding(get: { self.coordinator.renderSettings.invertSource },
+                set: { self.apply(invertSource: $0) })
+    }
+
     /// The one control that does NOT go through `RenderSettings`: export scale is not a render
     /// setting, it is how much of the source resolution the WRITE keeps, and the coordinator
     /// clamps it into `(0, 1]` on the way in.
@@ -191,7 +208,7 @@ struct WorkspaceView: View {
 
     /// Rebuilds the whole settings value from the coordinator's current one with a single field
     /// replaced, then adopts it. Every control routes through here, so assembling settings happens
-    /// in exactly one place (`RenderSettings.make`) and the five controls cannot drift apart.
+    /// in exactly one place (`RenderSettings.make`) and the six controls cannot drift apart.
     ///
     /// The `Task` is what bridges a synchronous `Binding` setter to the coordinator's `async`
     /// adoption; `updateRenderSettings` repaints through the same scrub token as everything else,
@@ -199,13 +216,14 @@ struct WorkspaceView: View {
     /// than by a second render path.
     private func apply(style: RenderStyleOption? = nil, palette: Palette? = nil,
                        background: RenderBackground? = nil, cellSize: Int? = nil,
-                       toneMap: Bool? = nil) {
+                       toneMap: Bool? = nil, invertSource: Bool? = nil) {
         let current = coordinator.renderSettings
         let settings = RenderSettings.make(style: style ?? RenderStyleOption(current.style),
                                            palette: palette ?? current.palette,
                                            background: background ?? current.background,
                                            cellSize: cellSize ?? current.cellSize,
-                                           toneMap: toneMap ?? current.toneMap)
+                                           toneMap: toneMap ?? current.toneMap,
+                                           invertSource: invertSource ?? current.invertSource)
         Task { await coordinator.updateRenderSettings(settings) }
     }
 

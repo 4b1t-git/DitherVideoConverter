@@ -322,6 +322,159 @@ final class RenderingParityTests: XCTestCase {
         XCTAssertNotEqual(toneMappedResult, rawResult, "Tone-map MUST change the stylized output")
     }
 
+    // Issue #47. `asciiStylize` maps a cell average through `(255 - avg) * span / 255`, so the
+    // DARKEST input takes the densest glyph — the print convention, where ink is laid on white
+    // paper. Most ASCII-art footage is the opposite: a bright subject on a dark field, which under
+    // that mapping gives every drop of ink to the background and leaves the subject blank.
+    //
+    // `invertSource` is the user-visible answer, and this is the property it exists for: with the
+    // flag ON a BRIGHT cell must draw strictly MORE ink than a dark one — the exact inverse of the
+    // default, asserted here in the same frame so neither reading can be a coincidence of the
+    // fixture. `.postToneMapSDR` keeps the byte a stylized brightness, so ink is `255 - byte` with
+    // no palette in between.
+    func testInvertSourceMakesABrightASCIICellDrawStrictlyMoreInkThanADarkOne() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let cell = 8, width = 16, height = 8
+        // Left cell bright (235), right cell dark (20): one cell of each polarity, nothing else.
+        let source = (0..<(width * height)).map { UInt8($0 % width < cell ? 235 : 20) }
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .still, scale: 1)
+        func ink(_ output: [UInt8], columns: Range<Int>) -> Int {
+            (0..<height).reduce(0) { total, y in
+                total + columns.reduce(0) { $0 + (255 - Int(output[y * width + $1])) }
+            }
+        }
+        let printLike = try RenderSettings(style: .ascii(.text), palette: palette,
+                                           background: .postToneMapSDR, cellSize: cell)
+        let terminalLike = try RenderSettings(style: .ascii(.text), palette: palette,
+                                              background: .postToneMapSDR, cellSize: cell,
+                                              invertSource: true)
+        let printed = try await renderer.render(request: request, settings: printLike,
+                                                pixels: source, sourceWidth: width, sourceHeight: height)
+        let inverted = try await renderer.render(request: request, settings: terminalLike,
+                                                 pixels: source, sourceWidth: width, sourceHeight: height)
+        let printedBright = ink(printed, columns: 0..<cell), printedDark = ink(printed, columns: cell..<(2 * cell))
+        XCTAssertLessThan(printedBright, printedDark,
+                          "Precondition: WITHOUT the flag the print convention MUST still hold — the dark cell "
+                          + "takes the ink; bright=\(printedBright) dark=\(printedDark)")
+        let invertedBright = ink(inverted, columns: 0..<cell), invertedDark = ink(inverted, columns: cell..<(2 * cell))
+        XCTAssertGreaterThan(invertedBright, invertedDark,
+                             "WITH invertSource a BRIGHT cell MUST draw strictly MORE ink than a dark one — that is "
+                             + "the terminal convention the flag exists for; bright=\(invertedBright) "
+                             + "dark=\(invertedDark). Ink still on the dark cell means the source was never inverted.")
+    }
+
+    // The regression guard that proves the flag is genuinely OPT-IN. `EXPORT_GOLDEN` pins one
+    // dither render through the whole export path; this pins the renderer itself, for an ASCII and
+    // a dither style, at the only place the flag could leak: settings that never mention it MUST
+    // produce the identical bytes to settings that spell out `invertSource: false`, and both MUST
+    // differ from the inverted render — otherwise the check would pass for a flag wired to nothing.
+    func testInvertSourceDefaultsToFalseAndLeavesEveryStyleByteIdentical() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let width = 32, height = 16
+        let source = (0..<(width * height)).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 13) }
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .still, scale: 1)
+        for style in [RenderSettings.Style.ascii(.text), .dither(.bayer)] {
+            let unmentioned = try RenderSettings(style: style, palette: palette,
+                                                 background: .postToneMapSDR, cellSize: 4)
+            XCTAssertFalse(unmentioned.invertSource,
+                           "Settings that never mention \(style) inversion MUST default to the print convention")
+            let explicit = try RenderSettings(style: style, palette: palette, background: .postToneMapSDR,
+                                              cellSize: 4, invertSource: false)
+            let flagged = try RenderSettings(style: style, palette: palette, background: .postToneMapSDR,
+                                             cellSize: 4, invertSource: true)
+            let baseline = try await renderer.render(request: request, settings: unmentioned,
+                                                     pixels: source, sourceWidth: width, sourceHeight: height)
+            let off = try await renderer.render(request: request, settings: explicit,
+                                                pixels: source, sourceWidth: width, sourceHeight: height)
+            let on = try await renderer.render(request: request, settings: flagged,
+                                               pixels: source, sourceWidth: width, sourceHeight: height)
+            XCTAssertEqual(baseline, off,
+                           "`invertSource: false` MUST be byte-identical to omitting it for \(style); a flag that "
+                           + "moves the default output is not opt-in and would move every pinned golden with it")
+            XCTAssertNotEqual(baseline, on,
+                              "`invertSource: true` MUST change \(style)'s output — equality here would mean the "
+                              + "byte-identity above is vacuous because the flag is wired to nothing")
+        }
+    }
+
+    // Threshold is the mode whose result can be stated exactly, which is why the deterministic
+    // proof lives here: every pixel of the source is above 128, so WITHOUT the flag every pixel is
+    // 255, and inverting the source puts every pixel below 128, so every pixel is 0. Nothing about
+    // that depends on a glyph raster, a palette, or a matrix — the two outputs are complements.
+    func testInvertSourceFlipsAThresholdDitherOfAUniformlyBrightSource() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let source = [UInt8](repeating: 200, count: 64)
+        let request = RenderRequest(timestamp: 0, width: 8, height: 8, intent: .still, scale: 1)
+        let upright = try RenderSettings(style: .dither(.threshold), palette: palette,
+                                         background: .postToneMapSDR)
+        let flipped = try RenderSettings(style: .dither(.threshold), palette: palette,
+                                         background: .postToneMapSDR, invertSource: true)
+        let plain = try await renderer.render(request: request, settings: upright,
+                                              pixels: source, sourceWidth: 8, sourceHeight: 8)
+        let inverted = try await renderer.render(request: request, settings: flipped,
+                                                 pixels: source, sourceWidth: 8, sourceHeight: 8)
+        XCTAssertEqual(Set(plain), [255],
+                       "Precondition: 200 is above the 128 threshold, so the upright render MUST be solid white")
+        XCTAssertEqual(Set(inverted), [0],
+                       "Inverting a source of 200 gives 55, which is BELOW the threshold, so the render MUST be "
+                       + "solid black — the exact complement of the upright one")
+    }
+
+    // The ordering `invertSource` and `toneMap` are applied in is a real decision, not an
+    // implementation detail: tone mapping is a non-linear PQ→SDR transfer, so inverting before it
+    // and inverting after it give different pictures. The renderer inverts the RAW SOURCE FIRST,
+    // and this pins that choice so it cannot change silently.
+    //
+    // WHY that order: `toneMap` is strongly convex — its own pinned goldens (0→0, 64→3, 128→34,
+    // 192→112, 255→235) put more than half of the input range below 34. Inverting AFTERWARDS maps
+    // that crushed range onto 255…221, so roughly half of every tone-mapped frame would land in the
+    // sparsest glyph slot and the picture would go blank again — the very defect this flag exists
+    // to fix. Measured over all 256 input values, tone-map-then-invert puts 121 of them in glyph
+    // slot 0 and never reaches the densest slot at all, while invert-then-tone-map spreads across
+    // all ten slots and reproduces the tone map's calibrated 0…235 output range instead of pushing
+    // values back above the display clip the roll-off deliberately stays under.
+    //
+    // 64 is chosen because the two orders land on OPPOSITE sides of the threshold, so a mode with
+    // no shades of grey can tell them apart.
+    func testInvertSourceIsAppliedToTheRawSourceBeforeToneMapping() async throws {
+        XCTAssertEqual(MetalFrameRenderer.toneMap(191), 111,
+                       "Precondition: inverting first hands the tone map 191, which lands BELOW the threshold")
+        XCTAssertEqual(255 &- MetalFrameRenderer.toneMap(64), 252,
+                       "Precondition: inverting last would give 252, ABOVE the threshold — the orders genuinely differ")
+        XCTAssertEqual(MetalFrameRenderer.toneMap(64), 3,
+                       "Precondition: NOT inverting leaves the tone map 3 — glyph slot 8, nearly the densest")
+        XCTAssertEqual(MetalFrameRenderer.toneMap(191), 111,
+                       "Precondition: inverting FIRST hands the tone map 191, which becomes 111 — a mid glyph")
+        XCTAssertEqual(255 &- MetalFrameRenderer.toneMap(64), 252,
+                       "Precondition: inverting LAST would give 252 — glyph slot 0, the empty one. The three "
+                       + "readings are far enough apart that ink alone tells them apart.")
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let cell = 8
+        let source = [UInt8](repeating: 64, count: cell * cell)
+        let request = RenderRequest(timestamp: 0, width: cell, height: cell, intent: .still, scale: 1)
+        func ink(_ output: [UInt8]) -> Int { output.reduce(0) { $0 + (255 - Int($1)) } }
+        let upright = try RenderSettings(style: .ascii(.text), palette: palette,
+                                         background: .postToneMapSDR, cellSize: cell, toneMap: true)
+        let flipped = try RenderSettings(style: .ascii(.text), palette: palette,
+                                         background: .postToneMapSDR, cellSize: cell, toneMap: true,
+                                         invertSource: true)
+        let uprightInk = ink(try await renderer.render(request: request, settings: upright,
+                                                       pixels: source, sourceWidth: cell, sourceHeight: cell))
+        let flippedInk = ink(try await renderer.render(request: request, settings: flipped,
+                                                       pixels: source, sourceWidth: cell, sourceHeight: cell))
+        XCTAssertGreaterThan(flippedInk, 0,
+                             "Inverting AFTER the tone map would give 252 and select the EMPTY glyph, drawing no "
+                             + "ink at all. Ink here is what proves the inversion ran on the raw source instead.")
+        XCTAssertLessThan(flippedInk, uprightInk,
+                          "Inverting the raw source MUST move a tone-mapped frame off the dense end of the ramp: "
+                          + "3 selects glyph 8, 111 selects glyph 5. Equal ink (\(flippedInk) vs \(uprightInk)) "
+                          + "means the source was never inverted at all.")
+    }
+
     func testPreEncodeStillEqualsExportAtOrientedResolution() async throws {
         let palette = try Palette(colors: blackWhite)
         let renderer = MetalFrameRenderer()

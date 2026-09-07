@@ -775,6 +775,48 @@ final class LifecycleTests: XCTestCase {
                        "An export started right after a settings change MUST write with the NEW configuration")
     }
 
+    // Issue #47's flag has to survive the SAME two hops every other control does: the panel's
+    // assembly function (`RenderSettings.make`) and the coordinator's adoption. A toggle that
+    // assembles into settings nobody re-renders with would move the checkbox and nothing else, and
+    // the user has no way to tell that apart from a flag that simply does not work — so this
+    // asserts both the carry-through and the repaint, in that order.
+    //
+    // The fixture's first frame is flat grey 32. Under the 4×4 Bayer matrix only two of sixteen
+    // thresholds sit below 32, so the upright render is mostly background; inverting the source to
+    // 223 puts it above fifteen of them, so the two patterns cannot coincide by accident.
+    func testAssembledInvertSourceReachesTheCoordinatorAndRepaintsTheFrameOnScreen() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        let upright = RenderSettings.make(style: .dither(.bayer), palette: try Palette(colors: bw),
+                                          background: .postToneMapSDR, cellSize: 1, toneMap: false)
+        XCTAssertFalse(upright.invertSource,
+                       "The assembly function MUST default to the print convention, so every existing call site "
+                       + "that omits the flag keeps assembling exactly what it assembled before")
+        await coordinator.updateRenderSettings(upright)
+        let before = try XCTUnwrap(coordinator.previewSnapshot, "A supported import MUST put a frame on screen")
+
+        let inverted = RenderSettings.make(style: .dither(.bayer), palette: try Palette(colors: bw),
+                                           background: .postToneMapSDR, cellSize: 1, toneMap: false,
+                                           invertSource: true)
+        XCTAssertTrue(inverted.invertSource, "`make` MUST carry the chosen source inversion into the settings")
+        XCTAssertEqual(inverted.style, upright.style, "Choosing inversion MUST NOT change the chosen style")
+        XCTAssertEqual(inverted.palette, upright.palette, "Choosing inversion MUST NOT change the chosen palette")
+        XCTAssertEqual(inverted.background, upright.background, "Choosing inversion MUST NOT change the background")
+        XCTAssertEqual(inverted.cellSize, upright.cellSize, "Choosing inversion MUST NOT change the cell size")
+        XCTAssertEqual(inverted.toneMap, upright.toneMap, "Choosing inversion MUST NOT change the tone-map choice")
+
+        await coordinator.updateRenderSettings(inverted)
+        XCTAssertEqual(coordinator.renderSettings, inverted, "The coordinator MUST hold the inverted settings")
+        XCTAssertEqual(coordinator.exportSettings.render.invertSource, true,
+                       "The next export MUST write with the inversion the user just chose")
+        let after = try XCTUnwrap(coordinator.previewSnapshot, "The frame on screen MUST survive a settings change")
+        XCTAssertNotEqual(after.pixels, before.pixels,
+                          "Turning the source inversion on MUST re-render the frame on screen, not only store the "
+                          + "new value — a stored-but-unpainted flag is invisible to the user who set it")
+    }
+
     // The window handed `PreviewView` a hardcoded copy of `LifecycleCoordinator.defaultSettings`,
     // so the snapshot was painted with the DEFAULT palette and background no matter what the
     // settings actually were: every control in the panel would have been a no-op on screen.
