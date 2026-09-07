@@ -35,13 +35,34 @@ import Foundation
 /// Antialiasing stays ON — it is what gives a 4×4 cell a recognisable shape, and it is a
 /// deterministic function of the outline. So one set at one cell always rasterizes to the same
 /// bytes, which lets the renderer cache an atlas and reuse it for every cell.
+///
+/// ## The ramp is MEASURED here, never declared
+///
+/// `asciiStylize` turns a cell average into a slot with `(255 - avg) * span / 255`, which is right
+/// only while slot 0 holds the lightest glyph and the last slot the densest. `ASCIIGlyphSet`
+/// declaration order does not deliver that — measured against Menlo, `.text` inverts locally and
+/// `.numeric` inverts outright, `'0'` being the densest digit while it is declared first, so the
+/// brightest input drew the darkest character. So the atlas sorts ITS OWN entries by the coverage
+/// it just measured, and the invariant the selector depends on holds by construction.
+///
+/// Sorting at the point of measurement rather than in the selector, or against a hardcoded order,
+/// is what makes the guarantee font-independent: `face(size:)` may resolve to `monospacedSystemFont`
+/// or Monaco on a machine without Menlo, and their metrics rank these characters differently. A
+/// baked-in order would silently reintroduce the inversion there — visible only to that user, and
+/// only as a picture that looks inverted. Whatever face resolves, its OWN densities decide.
 struct GlyphAtlas: Sendable, Equatable {
     /// The cell this atlas was rasterized for, after clamping. Always ≥ 1.
     let cellSize: Int
 
     /// One `cellSize * cellSize` coverage bitmap per glyph, row-major from the top row down (the
-    /// renderer's own pixel order), in the glyph set's order — sparsest first.
+    /// renderer's own pixel order), ordered by MEASURED ink ascending — slot 0 is the lightest glyph
+    /// this face actually rasterizes, the last slot the densest.
     let bitmaps: [[UInt8]]
+
+    /// The glyph characters in that same measured order, so the ramp is inspectable and testable
+    /// rather than inferred from byte counts. Always a permutation of `set.glyphs`: sorting reorders
+    /// the bundled set, and never adds, drops or substitutes a character.
+    let glyphs: [String]
 
     /// Rasterizes `set` at `cellSize`, which is clamped to at least 1 rather than rejected.
     /// `RenderSettings` already refuses a smaller one and `RenderSettings.make` clamps it, so the
@@ -52,8 +73,24 @@ struct GlyphAtlas: Sendable, Equatable {
         let cell = max(1, cellSize)
         self.cellSize = cell
         let font = Self.face(size: Self.pointSize(fittingCell: cell))
-        self.bitmaps = set.glyphs.map { Self.rasterize($0, font: font, cell: cell) }
+        let rasterized = set.glyphs.map { Self.rasterize($0, font: font, cell: cell) }
+        // Sorted through the indices so the bitmaps and the characters cannot drift apart, and with
+        // an explicit tiebreak on the original index: `sorted(by:)` is not documented as stable, and
+        // two glyphs CAN measure equal (a 1×1 cell collapses most of a set to the same byte). An
+        // order that depended on the sort's internal choices would let two runs of one export
+        // disagree, so the comparison is made total here rather than trusted to be.
+        let order = rasterized.indices.sorted {
+            let left = Self.ink(rasterized[$0]), right = Self.ink(rasterized[$1])
+            return left == right ? $0 < $1 : left < right
+        }
+        self.bitmaps = order.map { rasterized[$0] }
+        self.glyphs = order.map { set.glyphs[$0] }
     }
+
+    /// Total coverage over one cell — the measurement the ramp is ordered by, and the same quantity
+    /// a reader sums when checking the invariant. Accumulated as `Int`: a 16×16 cell of solid ink
+    /// reaches 65 280, far past the `UInt8` the samples are stored in.
+    private static func ink(_ bitmap: [UInt8]) -> Int { bitmap.reduce(0) { $0 + Int($1) } }
 
     /// Menlo, else the system monospaced face, else Monaco. `NSFont(name:size:)` returns `nil` for
     /// a face that is not installed, which is the only reason the fallbacks exist;

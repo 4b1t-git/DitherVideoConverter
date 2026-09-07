@@ -79,6 +79,11 @@ actor MetalFrameRenderer {
     /// Per `cellSize×cellSize` block: average source brightness, map to a bundled glyph via
     /// inverse density (dark input → densest glyph), then DRAW that glyph into the cell.
     ///
+    /// The selection below is only correct while slot 0 is the LIGHTEST glyph and the last slot the
+    /// densest, and it does not check: `GlyphAtlas` guarantees that by sorting its own entries on the
+    /// ink it measured, so the property holds for whichever face resolves at runtime. Nothing here
+    /// may reorder or reindex `atlas.bitmaps`.
+    ///
     /// The glyph selection is unchanged, deliberately: it is the spec'd mapping, and
     /// `testASCIIDensityIncreasesWhenCellSizeDecreases` pins the property it exists for. What
     /// changed is everything after it — this used to convert the chosen glyph's INDEX back into one
