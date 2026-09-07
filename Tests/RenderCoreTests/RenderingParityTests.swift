@@ -170,21 +170,95 @@ final class RenderingParityTests: XCTestCase {
         }
     }
 
-    // `GlyphCatalog.txt` orders the text set sparsest-first and the mapping relies on it: a bright
-    // cell MUST end up lighter than a dark one. The rendered metrics do NOT make that sequence
-    // non-decreasing, though — in Menlo ':' out-inks '-', and '#' out-inks both '%' and '@' — so a
-    // monotone ramp would assert something the font does not do. What the font DOES do at every
-    // cell size is separate the halves: every glyph in the dense half out-inks every glyph in the
-    // sparse half. That is the property the mapping depends on, checked instead of a stricter one
-    // that would only be green by luck.
-    func testTextGlyphSetInkSeparatesItsSparseHalfFromItsDenseHalf() {
+    // `asciiStylize` maps a cell average to a slot with `(255 - avg) * span / 255`, so it is correct
+    // only while slot 0 holds the LIGHTEST glyph and the last slot the densest. Declaration order
+    // does not deliver that: measured against Menlo `.text` inverts locally (':' out-inks '-', '#'
+    // out-inks both '%' and '@') and `.numeric` inverts outright, '0' being the densest digit while
+    // it is declared first.
+    //
+    // This asserted the weaker property the declared `.text` order happened to satisfy — every glyph
+    // of the dense half out-inking every glyph of the sparse half — because a monotone ramp would
+    // have asserted something the font does not do. `GlyphAtlas` now sorts its own entries by
+    // MEASURED coverage, so the font no longer decides: the full property holds for BOTH sets at
+    // every cell, and asserting the half-split instead would leave `.numeric`'s inversion, the one
+    // the sort exists to remove, invisible.
+    func testGlyphAtlasOrdersEverySetsBitmapsByMeasuredInkAscending() {
+        for set in ASCIIGlyphSet.allCases { for cellSize in [4, 8, 16] {
+            let ink = GlyphAtlas(set: set, cellSize: cellSize).bitmaps.map { $0.reduce(0) { $0 + Int($1) } }
+            XCTAssertTrue(zip(ink, ink.dropFirst()).allSatisfy { $0 <= $1 },
+                          "At cell \(cellSize) the \(set.rawValue) atlas MUST run lightest slot first — "
+                          + "`asciiStylize` sends the brightest cell to slot 0; ink=\(ink)")
+        } }
+    }
+
+    // The inversion stated at its sharpest, and kept out of the monotone check so it cannot be lost
+    // in a list of ten numbers: '0' is Menlo's densest digit and `ASCIIGlyphSet.numeric` declares it
+    // first, so the slot reserved for the BRIGHTEST cell carried the darkest character.
+    func testNumericGlyphSetLeavesItsLightestGlyphInTheSlotTheBrightestCellSelects() {
         for cellSize in [4, 8, 16] {
-            let ink = GlyphAtlas(set: .text, cellSize: cellSize).bitmaps.map { $0.reduce(0) { $0 + Int($1) } }
-            let sparsest = ink[0..<(ink.count / 2)], densest = ink[(ink.count / 2)...]
-            XCTAssertGreaterThan(densest.min()!, sparsest.max()!,
-                                 "At cell \(cellSize) the text set's dense half MUST out-ink its sparse half; "
-                                 + "sparse=\(Array(sparsest)) dense=\(Array(densest))")
+            let ink = GlyphAtlas(set: .numeric, cellSize: cellSize).bitmaps.map { $0.reduce(0) { $0 + Int($1) } }
+            XCTAssertLessThan(ink[0], ink[ink.count - 1],
+                              "At cell \(cellSize) the numeric set's first slot MUST carry strictly less ink than "
+                              + "its last; first=\(ink[0]) last=\(ink[ink.count - 1])")
         }
+    }
+
+    // Sorting reorders a set; it must never edit one. The atlas publishes the characters in the order
+    // it settled on, so the ramp is inspectable rather than inferred from byte counts, and this pins
+    // that order to a PERMUTATION of the declared set — every bundled glyph still present, exactly
+    // once, none invented. `GlyphCatalog.txt` and its drift test own WHICH glyphs a set contains;
+    // this owns the fact that sorting leaves that membership alone.
+    func testGlyphAtlasPublishesItsGlyphsAsAPermutationOfTheDeclaredSet() {
+        for set in ASCIIGlyphSet.allCases { for cellSize in [1, 4, 8, 16] {
+            let atlas = GlyphAtlas(set: set, cellSize: cellSize)
+            XCTAssertEqual(atlas.glyphs.count, atlas.bitmaps.count,
+                           "\(set.rawValue) at cell \(cellSize) MUST name one glyph per bitmap")
+            XCTAssertEqual(atlas.glyphs.sorted(), set.glyphs.sorted(),
+                           "Sorting \(set.rawValue) by ink at cell \(cellSize) MUST reorder the bundled glyphs, "
+                           + "never lose, duplicate or invent one; got \(atlas.glyphs)")
+        } }
+    }
+
+    // Ties are the only place a sort can be non-deterministic, and this codebase cannot afford one:
+    // the renderer caches an atlas per (set, cell) and every cell of every frame reads it, so an
+    // order that varied would make two runs of one export differ. `bitmaps` determinism is already
+    // pinned above; the published order needs the same guarantee, or the ramp could be stable in
+    // pixels and unstable in what it claims to be.
+    func testGlyphAtlasSortsToTheSameOrderEveryTime() {
+        for set in ASCIIGlyphSet.allCases { for cellSize in [1, 4, 8, 16] {
+            let first = GlyphAtlas(set: set, cellSize: cellSize)
+            let second = GlyphAtlas(set: set, cellSize: cellSize)
+            XCTAssertEqual(first.bitmaps, second.bitmaps,
+                           "Two \(set.rawValue) atlases at cell \(cellSize) MUST hold identical coverage")
+            XCTAssertEqual(first.glyphs, second.glyphs,
+                           "Two \(set.rawValue) atlases at cell \(cellSize) MUST settle on the identical glyph "
+                           + "order; \(first.glyphs) vs \(second.glyphs)")
+        } }
+    }
+
+    // The same defect in rendered pixels rather than atlas bytes, which is where a user meets it: a
+    // BRIGHT region of a `.numeric` render came out darker than a dark one. `.postToneMapSDR` keeps
+    // the byte a stylized brightness, so ink is `255 - byte` with no palette in between.
+    func testNumericASCIIDrawsABrightCellWithStrictlyLessInkThanADarkOne() async throws {
+        let palette = try Palette(colors: blackWhite)
+        let renderer = MetalFrameRenderer()
+        let cell = 8, width = 16, height = 8
+        let source = (0..<(width * height)).map { UInt8($0 % width < cell ? 235 : 20) }
+        let settings = try RenderSettings(style: .ascii(.numeric), palette: palette,
+                                          background: .postToneMapSDR, cellSize: cell)
+        let request = RenderRequest(timestamp: 0, width: width, height: height, intent: .still, scale: 1)
+        let output = try await renderer.render(request: request, settings: settings,
+                                               pixels: source, sourceWidth: width, sourceHeight: height)
+        func ink(columns: Range<Int>) -> Int {
+            (0..<height).reduce(0) { total, y in
+                total + columns.reduce(0) { $0 + (255 - Int(output[y * width + $1])) }
+            }
+        }
+        let bright = ink(columns: 0..<cell), dark = ink(columns: cell..<(2 * cell))
+        XCTAssertLessThan(bright, dark,
+                          "A bright numeric cell MUST draw strictly less ink than a dark one; "
+                          + "bright=\(bright) dark=\(dark). More ink on the bright cell IS the inverted ramp — "
+                          + "'0' is the densest digit and it sits in the slot the brightest cell selects.")
     }
 
     // `RenderSettings` rejects a cell size below 1 and `RenderSettings.make` clamps one, so the
