@@ -752,7 +752,13 @@ final class LifecycleTests: XCTestCase {
         let ascii = try XCTUnwrap(coordinator.previewSnapshot, "The frame on screen MUST survive a settings change")
         XCTAssertNotEqual(ascii.pixels, bayer.pixels,
                           "Choosing ASCII MUST change the picture, not only the stored settings")
-        XCTAssertTrue(ascii.pixels.allSatisfy { $0 != 0 && $0 != 255 },
+        // Measurement change forced by the glyph-rasterization fix, NOT a relaxation: the property
+        // is the same one — an ASCII render paints values no dither mode can produce, since every
+        // dither mode emits only {0, 255} under `.postToneMapSDR`. It was spelled "EVERY pixel is a
+        // mid-tone", true only while `asciiStylize` filled each whole cell with one brightness. A
+        // rasterized glyph is ink AND background, so its background pixels are legitimately 255,
+        // and its antialiased edges are the mid-tones no dither mode can reach.
+        XCTAssertTrue(ascii.pixels.contains { $0 != 0 && $0 != 255 },
                       "An ASCII render MUST paint glyph ink, which no dither mode can produce")
     }
 
@@ -786,6 +792,47 @@ final class LifecycleTests: XCTestCase {
                        "The preview MUST be painted with the CURRENT settings, not a copy of the defaults")
         XCTAssertNotEqual(view.previewSettings, LifecycleCoordinator.defaultSettings.render,
                           "Precondition: the chosen settings differ from the defaults, so a hardcoded copy fails here")
+    }
+
+    // The end-to-end consequence of the glyph-rasterization fix: what reaches the FILE has to be a
+    // character, not a block. The renderer's own glyph checks live in `RenderingParityTests` on
+    // in-memory bytes; this one exists because the export path re-samples, paints through
+    // `displayColor`, and hands the result to a lossy encoder — none of which a renderer test
+    // touches. It re-decodes the written frame for the reason
+    // `testExportAfterUpdatingRenderSettingsWritesTheNewStyle` does: the pixels are the claim.
+    func testASCIIExportWritesAFrameCarryingGlyphShapeRatherThanUniformCells() async throws {
+        let fixture = try MediaFixtureFactory().makeFixture()
+        defer { fixture.urls.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let url = exportURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let coordinator = LifecycleCoordinator()
+        await coordinator.importAsset(AVURLAsset(url: fixture.videoURL))
+        XCTAssertEqual(coordinator.phase, .ready, "Precondition: the fixture MUST import before it can be exported")
+        let cell = 8
+        await coordinator.updateRenderSettings(.make(style: .ascii(.text), palette: try Palette(colors: bw),
+                                                     background: .postToneMapSDR, cellSize: cell, toneMap: false))
+        await coordinator.export(audio: .none, outputURL: url)
+        XCTAssertEqual(coordinator.phase, .exported, "An ASCII export of a supported fixture MUST complete")
+
+        let luma = try firstFrameLuma(url)
+        XCTAssertFalse(luma.isEmpty, "The exported ASCII frame MUST be re-readable")
+        XCTAssertGreaterThan(Set(luma).count, 1, "A written ASCII frame MUST NOT be one flat value")
+        // The specific claim: SOME cell of the written frame swings light to dark, which is what a
+        // rasterized character looks like and what a cell filled with a single brightness — the
+        // mosaic this replaced — cannot produce at any cell size.
+        let width = 32, height = 16
+        XCTAssertEqual(luma.count, width * height, "Precondition: the fixture exports at its own 32×16 size")
+        let widestSwing = stride(from: 0, to: height, by: cell).flatMap { cellY in
+            stride(from: 0, to: width, by: cell).map { cellX -> Int in
+                let block = (cellY..<min(cellY + cell, height)).flatMap { y in
+                    (cellX..<min(cellX + cell, width)).map { Int(luma[y * width + $0]) }
+                }
+                return (block.max() ?? 0) - (block.min() ?? 0)
+            }
+        }.max() ?? 0
+        XCTAssertGreaterThan(widestSwing, 32,
+                             "A single cell of the exported frame MUST swing between glyph ink and background "
+                             + "(widest in-cell swing was \(widestSwing)); a uniform fill swings only by codec noise")
     }
 
     /// Decodes the first written video frame's luma plane.

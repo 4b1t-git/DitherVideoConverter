@@ -8,6 +8,20 @@ import Foundation
 actor MetalFrameRenderer {
     private let diffusion: MetalErrorDiffusionSpike?
 
+    /// Rasterized glyph sets, keyed by the two things that decide their pixels.
+    ///
+    /// A 1080p frame at cell size 4 is over 129,000 cells; rasterizing through Core Text once per
+    /// cell would run the type engine that many times per frame to produce ten distinct bitmaps.
+    /// The atlas is a pure function of `(set, cellSize)`, so it is built once and read by every
+    /// cell of every later frame. Actor isolation is what makes a plain mutable dictionary safe:
+    /// `asciiStylize` only ever runs on this actor's executor.
+    private var atlases: [AtlasKey: GlyphAtlas] = [:]
+
+    private struct AtlasKey: Hashable {
+        let set: ASCIIGlyphSet
+        let cellSize: Int
+    }
+
     init() { self.diffusion = try? MetalErrorDiffusionSpike() }
 
     /// Render one frame at the request dimensions, one byte per oriented pixel
@@ -63,14 +77,29 @@ actor MetalFrameRenderer {
     }
 
     /// Per `cellSize×cellSize` block: average source brightness, map to a bundled glyph via
-    /// inverse density (dark input → densest glyph), then emit one stylized brightness per
-    /// pixel — constant within a cell so palette matching is uniform.
+    /// inverse density (dark input → densest glyph), then DRAW that glyph into the cell.
+    ///
+    /// The glyph selection is unchanged, deliberately: it is the spec'd mapping, and
+    /// `testASCIIDensityIncreasesWhenCellSizeDecreases` pins the property it exists for. What
+    /// changed is everything after it — this used to convert the chosen glyph's INDEX back into one
+    /// brightness (`255 - glyphIndex * 255 / span`) and fill the whole cell with it, throwing the
+    /// character away and leaving a mosaic. `set.glyphs` was read for `.count` alone.
+    ///
+    /// Polarity is inherited, not invented: the byte emitted here is stylized BRIGHTNESS, so ink is
+    /// DARK (0) and background LIGHT (255). The replaced line said the same — the densest glyph
+    /// (`glyphIndex == span`) produced 0, the sparsest 255 — and `applyPaletteAndBackground`
+    /// resolves that brightness exactly as it does for a dither mode. So coverage inverts: full ink
+    /// (255 in the atlas) becomes brightness 0.
     private func asciiStylize(_ pixels: [UInt8], width: Int, height: Int, cellSize: Int,
                               set: ASCIIGlyphSet, settings: RenderSettings) -> [UInt8] {
         let c = max(1, cellSize), span = set.glyphs.count - 1
+        let atlas = atlas(for: set, cellSize: c)
         var output = [UInt8](repeating: 0, count: width * height)
         for cellY in stride(from: 0, to: height, by: c) {
             for cellX in stride(from: 0, to: width, by: c) {
+                // A frame is not a whole number of cells, so the right and bottom edges are
+                // partial: clipping the average AND the blit is what stops a cell hanging off the
+                // edge from reading or writing another row's pixels.
                 let endY = min(cellY + c, height), endX = min(cellX + c, width)
                 var sum = 0, count = 0
                 for y in cellY..<endY { for x in cellX..<endX {
@@ -78,11 +107,28 @@ actor MetalFrameRenderer {
                 } }
                 let avg = count > 0 ? sum / count : 0
                 let glyphIndex = (255 - avg) * span / 255
-                let ink = UInt8(truncatingIfNeeded: 255 - glyphIndex * 255 / max(1, span))
-                for y in cellY..<endY { for x in cellX..<endX { output[y * width + x] = ink } }
+                let bitmap = atlas.bitmaps[min(max(0, glyphIndex), atlas.bitmaps.count - 1)]
+                for y in cellY..<endY {
+                    let row = (y - cellY) * c
+                    for x in cellX..<endX {
+                        output[y * width + x] = 255 &- bitmap[row + (x - cellX)]
+                    }
+                }
             }
         }
         return applyPaletteAndBackground(output, settings: settings)
+    }
+
+    /// The atlas for one glyph set at one cell, rasterized on first use and kept. Never evicted:
+    /// an atlas is at most `glyphs.count * cellSize²` bytes — under 3 KB for the largest cell the
+    /// settings panel offers — over a key space of two bundled sets crossed with the sizes a user
+    /// picks, so bounding it would cost more code than the memory it could reclaim.
+    private func atlas(for set: ASCIIGlyphSet, cellSize: Int) -> GlyphAtlas {
+        let key = AtlasKey(set: set, cellSize: cellSize)
+        if let cached = atlases[key] { return cached }
+        let built = GlyphAtlas(set: set, cellSize: cellSize)
+        atlases[key] = built
+        return built
     }
 
     /// Deterministic BT.2390-to-100-nit linear Rec.709 EETF (R3-001 carry-forward).

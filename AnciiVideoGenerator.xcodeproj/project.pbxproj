@@ -14,6 +14,7 @@
 		C00000000000000000000002 /* ErrorDiffusion.metal in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000011 /* ErrorDiffusion.metal */; };
 		C00000000000000000000003 /* MetalFrameRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000020 /* MetalFrameRenderer.swift */; };
 		C00000000000000000000004 /* RenderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000021 /* RenderSettings.swift */; };
+		L00000000000000000000001 /* GlyphAtlas.swift in Sources */ = {isa = PBXBuildFile; fileRef = L00000000000000000000010 /* GlyphAtlas.swift */; };
 		G00000000000000000000001 /* BundledPalettes.json in Resources */ = {isa = PBXBuildFile; fileRef = G00000000000000000000010 /* BundledPalettes.json */; };
 		G00000000000000000000002 /* GlyphCatalog.txt in Resources */ = {isa = PBXBuildFile; fileRef = G00000000000000000000011 /* GlyphCatalog.txt */; };
 		D00000000000000000000001 /* FixtureGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000010 /* FixtureGateTests.swift */; };
@@ -67,6 +68,7 @@
 		C00000000000000000000011 /* ErrorDiffusion.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ErrorDiffusion.metal; sourceTree = "<group>"; };
 		C00000000000000000000020 /* MetalFrameRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalFrameRenderer.swift; sourceTree = "<group>"; };
 		C00000000000000000000021 /* RenderSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderSettings.swift; sourceTree = "<group>"; };
+		L00000000000000000000010 /* GlyphAtlas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlyphAtlas.swift; sourceTree = "<group>"; };
 		G00000000000000000000010 /* BundledPalettes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = BundledPalettes.json; sourceTree = "<group>"; };
 		G00000000000000000000011 /* GlyphCatalog.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = GlyphCatalog.txt; sourceTree = "<group>"; };
 		D00000000000000000000010 /* FixtureGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureGateTests.swift; sourceTree = "<group>"; };
@@ -114,7 +116,7 @@
 		C00000000000000000000033 /* RenderCore */ = {isa = PBXGroup; children = (C00000000000000000000036 /* Model */, C00000000000000000000034 /* Metal */, C00000000000000000000035 /* Shaders */); path = RenderCore; sourceTree = "<group>"; };
 		C00000000000000000000034 /* Metal */ = {isa = PBXGroup; children = (C00000000000000000000010, C00000000000000000000020); path = Metal; sourceTree = "<group>"; };
 		C00000000000000000000035 /* Shaders */ = {isa = PBXGroup; children = (C00000000000000000000011); path = Shaders; sourceTree = "<group>"; };
-		C00000000000000000000036 /* Model */ = {isa = PBXGroup; children = (C00000000000000000000021); path = Model; sourceTree = "<group>"; };
+		C00000000000000000000036 /* Model */ = {isa = PBXGroup; children = (C00000000000000000000021, L00000000000000000000010); path = Model; sourceTree = "<group>"; };
 		G00000000000000000000033 /* Resources */ = {isa = PBXGroup; children = (G00000000000000000000034 /* Palettes */, G00000000000000000000035 /* Fonts */); path = Resources; sourceTree = "<group>"; };
 		G00000000000000000000034 /* Palettes */ = {isa = PBXGroup; children = (G00000000000000000000010); path = Palettes; sourceTree = "<group>"; };
 		G00000000000000000000035 /* Fonts */ = {isa = PBXGroup; children = (G00000000000000000000011); path = Fonts; sourceTree = "<group>"; };
@@ -193,7 +195,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, C00000000000000000000001, C00000000000000000000002, C00000000000000000000003, C00000000000000000000004, E00000000000000000000001, E00000000000000000000002, F00000000000000000000002, H00000000000000000000003, H00000000000000000000004, H00000000000000000000005, H00000000000000000000006, H00000000000000000000007, I00000000000000000000004, J00000000000000000000001, K00000000000000000000001, K00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000024 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000001, L00000000000000000000001, C00000000000000000000001, C00000000000000000000002, C00000000000000000000003, C00000000000000000000004, E00000000000000000000001, E00000000000000000000002, F00000000000000000000002, H00000000000000000000003, H00000000000000000000004, H00000000000000000000005, H00000000000000000000006, H00000000000000000000007, I00000000000000000000004, J00000000000000000000001, K00000000000000000000001, K00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		B00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001, B00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 		D00000000000000000000025 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000001, D00000000000000000000002, F00000000000000000000001, H00000000000000000000001, H00000000000000000000002, H00000000000000000000008, J00000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
